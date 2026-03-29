@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "quality-gates-marketplace",
+  "description": "Local quality gates plugin marketplace",
+  "owner": {
+    "name": "jeonghokim"
+  },
+  "plugins": [
+    {
+      "name": "quality-gates",
+      "description": "3-gate quality verification pipeline: plan verification, iterative PR review, and runtime verification.",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Quality Gates - auto-triggers quality pipeline on PR creation",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
