@@ -43,7 +43,11 @@ def main():
         sys.exit(0)
 
     # Extract PR URL from output
-    stdout = tool_output.get("stdout", "")
+    # tool_output can be a dict {"stdout": "..."} or a plain string
+    if isinstance(tool_output, dict):
+        stdout = tool_output.get("stdout", "")
+    else:
+        stdout = str(tool_output)
     pr_url_match = re.search(r"https://github\.com/[^\s]+/pull/\d+", stdout)
     pr_url = pr_url_match.group(0) if pr_url_match else ""
 
