@@ -19,7 +19,10 @@ quality-gates/
 │   └── post-tool-use.py     # Auto-trigger on PR creation
 └── skills/
     └── quality-pipeline/
-        └── SKILL.md         # Pipeline orchestrator
+        ├── SKILL.md         # Pipeline orchestrator
+        └── references/
+            ├── dependency-check.md   # Pre-flight dependency checks
+            └── state-file-format.md  # Pipeline state file format
 ```
 
 ## Gates

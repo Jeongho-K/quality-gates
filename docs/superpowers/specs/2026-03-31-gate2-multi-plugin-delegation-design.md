@@ -6,7 +6,8 @@
 
 이 업그레이드는:
 1. `feature-dev`와 `superpowers` 플러그인의 에이전트들도 위임 대상에 추가
-2. 파일 기반 리포트를 Stop hook 기반 보고로 전환
+2. 파일 기반 리포트를 Agent 반환값 체인 기반 보고로 전환
+3. 서브에이전트에서 사용 불가한 `Skill()` 호출을 pipeline 스킬(메인 대화)로 이동
 
 ---
 
@@ -117,11 +118,9 @@ plan-verifier의 Step 4(Cross-Reference with Git) **이후**, Step 4.5 추가:
 ### Implementation Trace (code-explorer)
 - [item]: fully connected ✓
 - [item]: gap found — [description]
-
-### Evidence-Based Verification
-- [command]: [exit code] — [pass/fail]
-- [evidence summary]
 ```
+
+Note: Evidence-Based Verification 결과는 plan-verifier 리포트에 포함되지 않는다. pipeline 스킬이 Gate 1 결과 수신 후 별도로 실행하고 Gate 1 출력에 통합한다.
 
 ---
 
@@ -215,6 +214,8 @@ pr-review-toolkit:code-simplifier       simplification (never re-run)
 |------|------|
 | feature-dev 있음 | Step 4.5 실행 (code-explorer 구현 추적) |
 | feature-dev 없음 | Step 4.5 건너뜀, 기존 동작 유지 |
+| superpowers 있음 | Gate 1.5 실행 (evidence-based verification, pipeline 스킬에서 호출) |
+| superpowers 없음 | Gate 1.5 건너뜀 |
 
 **Gate 2:**
 | 상황 | Phase 1 | Phase 2 | Phase 3 |
