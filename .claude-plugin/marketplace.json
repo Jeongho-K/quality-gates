@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "quality-gates-marketplace",
-  "description": "Local quality gates plugin marketplace",
+  "name": "devbrew",
+  "description": "DevBrew — Brewing better dev tools for Claude Code",
   "owner": {
     "name": "jeonghokim"
   },
@@ -9,7 +9,7 @@
     {
       "name": "quality-gates",
       "description": "3-gate quality verification pipeline: plan verification, iterative PR review, and runtime verification.",
-      "source": "./",
+      "source": "./plugins/quality-gates",
       "category": "development"
     }
   ]
