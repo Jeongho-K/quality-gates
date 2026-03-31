@@ -26,8 +26,8 @@ quality-gates/
 
 | Gate | Agent | Purpose | Delegates To |
 |------|-------|---------|-------------|
-| 1 | plan-verifier | Cross-references plan checkboxes with git diff | feature-dev:code-explorer (impl trace), superpowers:verification-before-completion (evidence) |
-| 2 | pr-reviewer | Orchestrates multi-plugin review agents iteratively | pr-review-toolkit (core review), feature-dev (conventions, architecture), superpowers (plan alignment), code-review (PR comment) |
+| 1 | plan-verifier | Cross-references plan checkboxes with git diff | feature-dev:code-explorer (impl trace), superpowers:verification-before-completion (evidence, via pipeline) |
+| 2 | pr-reviewer | Orchestrates multi-plugin review agents iteratively | pr-review-toolkit (core review), feature-dev (conventions, architecture), superpowers (plan alignment) |
 | 3 | runtime-verifier | Starts the app, checks console errors, takes screenshots | chrome-devtools-mcp or playwright |
 
 ## Gate 2 Review Phases
@@ -47,9 +47,6 @@ Phase 2 (Conditional):
 
 Phase 3 (Polish, non-blocking):
   └── pr-review-toolkit:code-simplifier       → simplification
-
-Phase 4 (PR Comment, conditional, non-blocking):
-  └── /code-review:code-review                → auto GitHub comment
 ```
 
 ## Pipeline Flow
@@ -166,11 +163,6 @@ claude plugin add feature-dev
 claude plugin add superpowers
 ```
 
-**code-review** (optional — auto GitHub PR comment):
-```bash
-claude plugin add code-review
-```
-
 **Browser automation** (optional for Gate 3 — runtime verification), install one of:
 
 ```bash
@@ -188,7 +180,6 @@ claude plugin add playwright
 | pr-review-toolkit | Yes | Gate 2 | Core review agents |
 | feature-dev | No | Gate 1, 2 | Convention review, architecture, impl trace |
 | superpowers | No | Gate 1, 2 | Plan alignment, evidence verification |
-| code-review | No | Gate 2 | Auto PR comment |
 | chrome-devtools-mcp / playwright | No | Gate 3 | Browser automation |
 
 ## Usage

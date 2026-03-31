@@ -102,19 +102,12 @@ plan-verifier의 Step 4(Cross-Reference with Git) **이후**, Step 4.5 추가:
 - **결과 통합**: "fully connected" → "likely implemented"로 상태 업그레이드
 - **읽기 전용**: Gate 1 원칙 유지, 코드 수정 없음
 
-### Step 5.5: Evidence-Based Verification (conditional)
+### Step 5.5: Evidence-Based Verification (moved to pipeline skill)
 
 - **조건**: `available_plugins`에 `superpowers` 포함 + blocking 항목이 "likely implemented" 또는 "possibly implemented" 상태
 - **목적**: 단순 파일 존재가 아닌, 실행/테스트 증거로 구현 완료를 검증
-- **invoke**:
-  ```
-  Skill("superpowers:verification-before-completion")
-  ```
-  스킬의 게이트 함수를 따라:
-  1. IDENTIFY: 구현을 증명할 명령어 결정 (테스트 실행, 빌드, lint 등)
-  2. RUN: 명령어 실행
-  3. READ: 전체 출력과 exit code 확인
-  4. VERIFY: 출력이 구현 완료를 증명하는지 판단
+- **실행 위치**: ~~plan-verifier 에이전트 내~~ → **quality-pipeline 스킬(메인 대화)**에서 Gate 1 결과 수신 후 호출
+- **이유**: 서브에이전트에서는 `Skill()` 도구 사용 불가. pipeline 스킬은 메인 대화 컨텍스트에서 실행되므로 `Skill("superpowers:verification-before-completion")` 호출 가능
 - **결과 통합**: 증거가 확인된 항목은 verdict에 반영
 - **읽기 전용 예외**: 이 스킬은 테스트/빌드 명령을 실행하지만 코드를 수정하지 않음
 
@@ -151,9 +144,6 @@ Phase 2 (Conditional — up to 5 agents):
 
 Phase 3 (Polish, non-blocking — 1 agent):
   └── pr-review-toolkit:code-simplifier       → 단순화 제안
-
-Phase 4 (PR Comment, conditional — 1 command) [NEW]:
-  └── /code-review:code-review                → PR에 자동 GitHub 코멘트 작성
 ```
 
 ### 새 에이전트 상세
@@ -175,14 +165,6 @@ Phase 4 (PR Comment, conditional — 1 command) [NEW]:
 - **모델 오버라이드**: `model="opus"` (feature-dev 기본 sonnet → opus로 오버라이드)
 - **역할**: 아키텍처 일관성, 패턴 준수, 모듈 경계 검증
 - **프롬프트**: "Analyze the architectural impact of the current git diff changes. Validate that new files follow existing codebase patterns, module boundaries are respected, and architecture remains consistent. Focus on pattern validation, not bugs or style."
-
-#### /code-review:code-review (Phase 4, conditional)
-- **조건**: PR URL이 존재할 때 (pr_url이 전달된 경우)
-- **모델**: Haiku(필터링) + Sonnet(분석) — 커맨드 자체 정의
-- **역할**: Phase 1~3의 내부 리뷰와 별도로, PR에 자동 GitHub 코멘트 작성. 5개 병렬 에이전트로 독립적 리뷰 수행.
-- **invoke**: `Skill("code-review:code-review")`
-- **주의**: PR이 없는 상태(로컬 리뷰만)에서는 실행하지 않음
-- **non-blocking**: Phase 4 결과는 Gate 2 verdict에 영향 없음 (PR 코멘트는 정보 제공용)
 
 #### 제외 항목
 - **feature-dev:code-explorer**: Gate 2에서 제외 (리뷰 도구가 아닌 분석 도구, Gate 1에서만 사용)
@@ -213,7 +195,6 @@ pr-review-toolkit:code-simplifier       simplification (never re-run)
 | pr-review-toolkit | 필수 | Gate 2 core (Phase 1/2/3) | Gate 2 SKIP |
 | feature-dev | 선택 | Gate 1 trace, Gate 2 conventions/architecture | 해당 에이전트만 skip |
 | superpowers | 선택 | Gate 1 verification, Gate 2 plan-alignment | 해당 스킬/에이전트만 skip |
-| code-review | 선택 | Gate 2 Phase 4 (PR 코멘트) | Phase 4 skip |
 | browser automation | 선택 | Gate 3 | fallback |
 
 ### quality-pipeline SKILL.md 의존성 체크 확장

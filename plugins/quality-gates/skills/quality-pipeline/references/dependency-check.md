@@ -29,19 +29,13 @@ Before executing the pipeline, verify that required and optional external plugin
        (superpowers:verification-before-completion) will be skipped."
      → Continue automatically (non-blocking)
 
-4. Check Gate 2 optional dependency (code-review) [OPTIONAL]:
-   - Check if code-review command/skill is available
-   - If NOT available:
-     → Log info: "code-review plugin not installed. PR auto-comment (Phase 4) will be skipped."
-     → Continue automatically (non-blocking)
-
-5. Check Gate 3 dependency (browser automation) [OPTIONAL]:
+4. Check Gate 3 dependency (browser automation) [OPTIONAL]:
    - Check if chrome-devtools-mcp OR playwright MCP tools are available
    - If NEITHER is available:
      → Warn user: "No browser automation plugin found (chrome-devtools-mcp or playwright).
        Gate 3 (Runtime Verification) will fall back to curl/test-based checks only."
      → This is informational only — Gate 3 has built-in fallback, so proceed automatically
 
-Build `available_plugins` list from checks above (e.g., ["pr-review-toolkit", "feature-dev", "superpowers", "code-review"]).
+Build `available_plugins` list from checks above (e.g., ["pr-review-toolkit", "feature-dev", "superpowers"]).
 Log dependency check results in the state file history.
 ```

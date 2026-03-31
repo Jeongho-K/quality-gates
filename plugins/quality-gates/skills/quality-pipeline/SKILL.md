@@ -58,11 +58,32 @@ FOR iteration IN 1..MAX_TOTAL_ITERATIONS:
 
   Read the agent's report. Check the Verdict line.
 
+  === GATE 1.5: Evidence-Based Verification (conditional) ===
+
+  If `available_plugins` includes `superpowers` AND the plan-verifier report
+  contains items in "Likely implemented" or "Possibly implemented" status:
+
+  Skill("superpowers:verification-before-completion")
+
+  Follow the skill's gate function:
+  1. IDENTIFY: Determine which command proves the implementation works (test suite, build, lint, etc.)
+  2. RUN: Execute the full command
+  3. READ: Check full output and exit code
+  4. VERIFY: Does the output confirm the implementation?
+
+  Integrate evidence into Gate 1's verdict — items with passing evidence
+  are more confidently "implemented".
+
+  If `superpowers` is NOT in `available_plugins`, skip this step.
+
+  Note: This step executes commands (tests, builds) but does NOT modify any code.
+
   **Output Gate 1 result to user immediately:**
   ```
   ## Gate 1: Plan Verification — [PASS/FAIL/SKIP]
   [verdict explanation]
   [key findings summary]
+  [evidence-based verification results, if executed]
   ```
 
   Handle verdict:

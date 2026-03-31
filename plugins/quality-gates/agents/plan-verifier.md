@@ -5,8 +5,7 @@ color: cyan
 description: >
   Use this agent to verify implementation completeness against a plan file.
   Reads the markdown plan with checkbox items, cross-references with git diff,
-  optionally traces implementation paths via feature-dev:code-explorer, and
-  verifies completion with evidence via superpowers:verification-before-completion.
+  optionally traces implementation paths via feature-dev:code-explorer.
   Dispatched by the quality-pipeline skill as Gate 1 of the quality gates pipeline.
 
   <example>Context: Quality pipeline Gate 1 — checking if all planned tasks are implemented.
@@ -101,27 +100,7 @@ Integrate the results:
 
 If `feature-dev` is NOT in `available_plugins`, skip this step entirely.
 
-## Step 5.5: Evidence-Based Verification (conditional)
-
-If `available_plugins` includes `superpowers` AND there are blocking items in "Likely implemented" or "Possibly implemented" status:
-
-Invoke the verification-before-completion skill to gather evidence:
-
-Skill("superpowers:verification-before-completion")
-
-Follow the skill's gate function:
-1. IDENTIFY: Determine which command proves the implementation works (test suite, build, lint, etc.)
-2. RUN: Execute the full command
-3. READ: Check full output and exit code
-4. VERIFY: Does the output confirm the implementation?
-
-Integrate results into the report's verdict — items with passing evidence are more confidently "implemented".
-
-If `superpowers` is NOT in `available_plugins`, skip this step entirely.
-
-Note: This step executes commands (tests, builds) but does NOT modify any code — maintaining Gate 1's read-only principle for source code.
-
-## Step 6: Generate Report
+## Step 5: Generate Report
 
 Output a structured report in this exact format:
 
@@ -148,12 +127,6 @@ Output a structured report in this exact format:
 - [item]: gap found — [description]
 [If Step 4.5 was skipped: "Skipped (feature-dev plugin not available)"]
 
-### Evidence-Based Verification
-[If Step 5.5 was executed:]
-- [command]: [exit code] — [pass/fail]
-- [evidence summary]
-[If Step 5.5 was skipped: "Skipped (superpowers plugin not available)"]
-
 ### Verdict: [PASS / FAIL / SKIP]
 [If FAIL: "N blocking items remain unimplemented."]
 [If PASS: "All blocking items are implemented."]
@@ -168,5 +141,4 @@ Output a structured report in this exact format:
 - Be conservative: when in doubt, classify as blocking
 - Always output the structured report format above — the orchestrator parses it
 - If `feature-dev` is not in `available_plugins`, skip Step 4.5 silently and note "Skipped" in the report
-- If `superpowers` is not in `available_plugins`, skip Step 5.5 silently and note "Skipped" in the report
 - When dispatching feature-dev:code-explorer, always use model="opus" to override the plugin's default sonnet model
