@@ -1,7 +1,7 @@
 {
   "name": "quality-gates",
-  "description": "3-gate quality verification pipeline: plan verification, iterative PR review, and runtime verification. Auto-triggers on PR creation or runs manually via /qg. Requires: pr-review-toolkit plugin (Gate 2), chrome-devtools-mcp or playwright plugin (Gate 3).",
-  "version": "1.0.2",
+  "description": "3-gate quality verification pipeline with multi-plugin review delegation. Auto-triggers on PR creation via gh pr create.",
+  "version": "1.1.0",
   "author": {
     "name": "jeonghokim"
   }
