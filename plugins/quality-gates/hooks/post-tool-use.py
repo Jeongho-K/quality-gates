@@ -21,7 +21,8 @@ def main():
 
     tool_name = input_data.get("tool_name", "")
     tool_input = input_data.get("tool_input", {})
-    tool_output = input_data.get("tool_output", {})
+    # Actual field name from Claude Code is "tool_response", not "tool_output"
+    tool_response = input_data.get("tool_response", {})
 
     if tool_name != "Bash":
         print(json.dumps({}))
@@ -35,19 +36,17 @@ def main():
         sys.exit(0)
 
     # Check for active pipeline state file to prevent double-trigger
-    # Use CWD env var if available (more reliable in agent threads), fallback to os.getcwd()
-    project_dir = os.environ.get("CWD", os.getcwd())
+    project_dir = input_data.get("cwd", os.getcwd())
     state_file = os.path.join(project_dir, ".claude", "quality-gates.local.md")
     if os.path.exists(state_file):
         print(json.dumps({}))
         sys.exit(0)
 
-    # Extract PR URL from output
-    # tool_output can be a dict {"stdout": "..."} or a plain string
-    if isinstance(tool_output, dict):
-        stdout = tool_output.get("stdout", "")
+    # Extract PR URL from tool_response.stdout
+    if isinstance(tool_response, dict):
+        stdout = tool_response.get("stdout", "")
     else:
-        stdout = str(tool_output)
+        stdout = str(tool_response)
     pr_url_match = re.search(r"https://github\.com/[^\s]+/pull/\d+", stdout)
     pr_url = pr_url_match.group(0) if pr_url_match else ""
 
