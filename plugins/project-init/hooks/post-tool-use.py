@@ -113,8 +113,8 @@ def validate_branch(command):
 
 def validate_commit(command):
     """Check commit commands for Conventional Commits format."""
-    # Skip non-message commits (editor mode, amend without -m, merge)
-    if "merge" in command and "--no-edit" in command:
+    # Skip git merge --no-edit (auto-generated merge commit, no user message to validate)
+    if re.search(r"git\s+merge\s+.*--no-edit", command):
         return None
 
     # Try HEREDOC-style commits first (git commit -m "$(cat <<'EOF'...EOF)")
