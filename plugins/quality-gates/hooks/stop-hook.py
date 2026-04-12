@@ -93,7 +93,38 @@ def extract_gate_results(body):
     return results_match.group(1).strip() if results_match else ""
 
 
-# --- Transcript Parsing ---
+# --- Signal Extraction ---
+
+def extract_signal_from_hook_input(hook_input):
+    """Extract <qg-signal> from last_assistant_message in hook input.
+
+    The Stop hook API provides 'last_assistant_message' containing the
+    complete last assistant message text. This is more reliable than
+    transcript parsing because it's guaranteed to include the current turn.
+    """
+    last_msg = hook_input.get("last_assistant_message", "")
+    if not last_msg:
+        return None
+
+    # last_assistant_message may be a string or a structured object
+    if isinstance(last_msg, dict):
+        # Try to extract text from content blocks
+        content = last_msg.get("content", [])
+        if isinstance(content, list):
+            texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            last_msg = "\n".join(texts)
+        elif isinstance(content, str):
+            last_msg = content
+        else:
+            last_msg = str(last_msg)
+
+    matches = re.findall(r"<qg-signal\s+([^/]*?)/>", last_msg)
+    if not matches:
+        return None
+
+    attrs = dict(re.findall(r'(\w+)="([^"]*)"', matches[-1]))
+    return attrs
+
 
 def extract_last_signal(transcript_path):
     """Extract the last <qg-signal> tag from the transcript.
@@ -502,9 +533,11 @@ def main():
     if state_session and hook_session and state_session != hook_session:
         sys.exit(0)
 
-    # 4. Extract signal from transcript
-    transcript_path = hook_input.get("transcript_path", "")
-    signal = extract_last_signal(transcript_path)
+    # 4. Extract signal from hook input or transcript
+    signal = extract_signal_from_hook_input(hook_input)
+    if not signal:
+        transcript_path = hook_input.get("transcript_path", "")
+        signal = extract_last_signal(transcript_path)
 
     # 5. Get gate results from state file body
     gate_results = extract_gate_results(body)
