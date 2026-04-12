@@ -94,10 +94,30 @@ fi
 
 AVAILABLE_PLUGINS=""
 
+# Helper: check if a plugin is installed
+# Searches: installed_plugins.json, plugin cache dirs, and project marketplace.json
+plugin_installed() {
+  local name="$1"
+  # Check installed_plugins.json (primary source of truth)
+  if [ -f ~/.claude/plugins/installed_plugins.json ] && \
+     grep -q "\"$name@" ~/.claude/plugins/installed_plugins.json 2>/dev/null; then
+    return 0
+  fi
+  # Check plugin cache directories (fallback)
+  if ls ~/.claude/plugins/cache/*/  2>/dev/null | grep -q "$name"; then
+    return 0
+  fi
+  # Check project marketplace.json
+  if [ -f ".claude-plugin/marketplace.json" ] && \
+     grep -q "\"$name\"" ".claude-plugin/marketplace.json" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 # Check pr-review-toolkit (required for Gate 2)
 PR_REVIEW_FOUND=false
-if ls ~/.claude/plugins/ 2>/dev/null | grep -q "pr-review-toolkit" || \
-   ([ -f ".claude-plugin/marketplace.json" ] && grep -q "pr-review-toolkit" ".claude-plugin/marketplace.json" 2>/dev/null); then
+if plugin_installed "pr-review-toolkit"; then
   PR_REVIEW_FOUND=true
   AVAILABLE_PLUGINS="pr-review-toolkit"
 fi
@@ -110,8 +130,7 @@ if [[ "$PR_REVIEW_FOUND" == "false" ]]; then
 fi
 
 # Check feature-dev (optional)
-if ls ~/.claude/plugins/ 2>/dev/null | grep -q "feature-dev" || \
-   ([ -f ".claude-plugin/marketplace.json" ] && grep -q "feature-dev" ".claude-plugin/marketplace.json" 2>/dev/null); then
+if plugin_installed "feature-dev"; then
   if [[ -n "$AVAILABLE_PLUGINS" ]]; then
     AVAILABLE_PLUGINS="$AVAILABLE_PLUGINS,feature-dev"
   else
@@ -120,8 +139,7 @@ if ls ~/.claude/plugins/ 2>/dev/null | grep -q "feature-dev" || \
 fi
 
 # Check superpowers (optional)
-if ls ~/.claude/plugins/ 2>/dev/null | grep -q "superpowers" || \
-   ([ -f ".claude-plugin/marketplace.json" ] && grep -q "superpowers" ".claude-plugin/marketplace.json" 2>/dev/null); then
+if plugin_installed "superpowers"; then
   if [[ -n "$AVAILABLE_PLUGINS" ]]; then
     AVAILABLE_PLUGINS="$AVAILABLE_PLUGINS,superpowers"
   else
