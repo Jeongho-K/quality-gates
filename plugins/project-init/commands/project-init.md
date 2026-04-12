@@ -1,67 +1,113 @@
 ---
-description: "Show git workflow rules, create branches, or guide PR creation"
-argument-hint: "[show|branch <name>|pr]"
-allowed-tools: [Bash, Read, Skill, Glob, Grep]
+description: "Initialize git workflow rules for the project (branch strategy, commit conventions, PR process)"
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep]
 ---
 
 # project-init
 
-Manage the project's git workflow: view rules, create branches, or prepare PRs.
-
-**Arguments:** $ARGUMENTS
+Initialize git workflow rules by selecting a branching strategy template, then generating CLAUDE.md and docs/ files for the project.
 
 ## Instructions
 
-Parse the subcommand from `$ARGUMENTS`:
+Follow these steps exactly in order.
 
-### `/project-init` or `/project-init show`
+### Step 1: Detect project state
 
-Display the git workflow rules by invoking the skill:
+1. Check if `CLAUDE.md` exists in the project root
+2. If it exists, check if a `## Git Workflow` section already exists
+3. Check if `docs/git-workflow/` directory exists
 
-Use `Skill("project-init:git-workflow")` to load and present the workflow rules to the user.
+If existing Git Workflow configuration is found, ask the user:
+> "Existing git workflow rules detected. Replace them with the new template?"
 
-### `/project-init branch <name>`
+If the user declines, stop.
 
-Create a new branch from latest `main`.
+### Step 2: Select branching strategy
 
-1. Validate the branch name matches `feature/*` or `fix/*` pattern
-   - If not, suggest the corrected name and ask the user to confirm
-2. Ensure starting from latest main:
-   ```bash
-   git checkout main && git pull origin main
-   ```
-3. Create the branch:
-   ```bash
-   git checkout -b <name>
-   ```
-4. Confirm success and remind next steps:
-   > Branch `<name>` created from latest main.
-   > Next: make changes, commit, then `/project-init pr` when ready.
+Present these 3 options to the user:
 
-### `/project-init pr`
+| Strategy | Branches | Best for |
+|----------|----------|----------|
+| **GitHub Flow** | `main` + `feature/*` / `fix/*` | Small teams, CI/CD, continuous deployment |
+| **Git Flow** | `main` + `develop` + `feature/*` / `fix/*` / `release/*` / `hotfix/*` | Teams with release cycles, version management |
+| **Trunk-based** | `main` + short-lived `feature/*` / `fix/*` | Fast deployment, feature flag teams |
 
-Guide PR creation for the current branch.
+Wait for the user to choose.
 
-1. Check the current branch: `git branch --show-current`
-   - If on `main`, warn and stop — must be on a feature/fix branch
-2. Validate branch name follows convention
-3. Push to remote:
-   ```bash
-   git push -u origin <current-branch>
-   ```
-4. Create PR:
-   ```bash
-   gh pr create --title "..." --body "..."
-   ```
-   - Title: derive from branch name and recent commits
-   - Body: include Summary and Test Plan sections
-5. Note: if `quality-gates` plugin is installed, the quality pipeline will auto-trigger after PR creation
+### Step 3: Customization questions
 
-### Quick Reference
+Ask these questions based on the selected strategy:
 
-| Command | Effect |
-|---------|--------|
-| `/project-init` | Show git workflow rules |
-| `/project-init show` | Show git workflow rules |
-| `/project-init branch feature/my-plugin` | Create branch from main |
-| `/project-init pr` | Push and create PR |
+**For all strategies:**
+
+1. **Commit scope convention** — "How should commit scopes be defined?"
+   - By module/directory name (e.g., `feat(auth):`, `fix(api):`)
+   - By feature area (e.g., `feat(login):`, `fix(checkout):`)
+   - No scope required (e.g., `feat:`, `fix:`)
+
+2. **Default merge strategy** — "What's the default PR merge strategy?"
+   - Squash merge (recommended for clean history)
+   - Merge commit (preserves all commits)
+   - Rebase (linear history)
+
+**Additional for Git Flow:**
+
+3. **Release branch naming** — "Release branch format?"
+   - `release/v*` (e.g., `release/v1.2.0`) — default
+   - Custom format
+
+### Step 4: Generate files
+
+Based on the selected strategy and answers, generate the following files.
+
+**Important:** The template files are located at `${CLAUDE_PLUGIN_ROOT}/templates/`. Read them, replace placeholders, and write to the project.
+
+#### 4a: Read templates
+
+Read these files from the plugin:
+- `${CLAUDE_PLUGIN_ROOT}/templates/<strategy>/claude-md-section.md`
+- `${CLAUDE_PLUGIN_ROOT}/templates/<strategy>/branch-strategy.md`
+- `${CLAUDE_PLUGIN_ROOT}/templates/shared/commit-conventions.md`
+- `${CLAUDE_PLUGIN_ROOT}/templates/shared/pr-process.md`
+
+Where `<strategy>` is one of: `github-flow`, `git-flow`, `trunk-based`.
+
+#### 4b: Replace placeholders
+
+Replace these placeholders in the template content:
+
+| Placeholder | Replace with |
+|-------------|-------------|
+| `{{SCOPE_CONVENTION}}` | The scope rule from Step 3 question 1 (e.g., "Scope by module/directory name: `auth`, `api`, `ui`") |
+| `{{MERGE_STRATEGY}}` | The merge strategy from Step 3 question 2 (e.g., "squash merge") |
+
+#### 4c: Write CLAUDE.md section
+
+- If `CLAUDE.md` exists and has a `## Git Workflow` section: **replace** that section only (preserve all other content)
+- If `CLAUDE.md` exists but has no `## Git Workflow` section: **append** the section at the end
+- If `CLAUDE.md` does not exist: **create** the file with the section
+
+Use the content from `claude-md-section.md` (with placeholders replaced).
+
+#### 4d: Write docs/git-workflow/ files
+
+Create the directory `docs/git-workflow/` if it doesn't exist. Write these 3 files:
+
+1. `docs/git-workflow/branch-strategy.md` — from `templates/<strategy>/branch-strategy.md`
+2. `docs/git-workflow/commit-conventions.md` — from `templates/shared/commit-conventions.md` (with placeholders replaced)
+3. `docs/git-workflow/pr-process.md` — from `templates/shared/pr-process.md` (with placeholders replaced)
+
+### Step 5: Confirm
+
+Report what was created:
+
+> Git workflow initialized with **{strategy name}** strategy.
+>
+> Files created/updated:
+> - `CLAUDE.md` — Git Workflow section added
+> - `docs/git-workflow/branch-strategy.md` — Branch rules
+> - `docs/git-workflow/commit-conventions.md` — Commit conventions
+> - `docs/git-workflow/pr-process.md` — PR process
+>
+> The `project-init` plugin hook will auto-validate branch names and commit messages.
+> Use `/commit` or `/commit-push-pr` (commit-commands plugin) for streamlined git operations.

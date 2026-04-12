@@ -1,19 +1,141 @@
 #!/usr/bin/env python3
 """PostToolUse hook for project-init plugin.
 
-Detects branch creation commands (git checkout -b, git switch -c) and
-validates branch naming against the convention: feature/* or fix/*.
-Warns via systemMessage if the name doesn't match — does not block.
+Validates two things on Bash tool use:
+1. Branch naming — detects git checkout -b / git switch -c and validates
+   the branch name against the pattern in docs/git-workflow/branch-strategy.md.
+2. Commit message — detects git commit -m and validates Conventional Commits format.
+
+Both validators emit non-blocking warnings via systemMessage.
 """
 
 import json
+import os
 import re
 import sys
 
-BRANCH_PATTERN = re.compile(r"^(feature|fix)/[\w.-]+$")
-BRANCH_CREATE_PATTERN = re.compile(
-    r"git\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)"
+# --- Constants ---
+
+DEFAULT_BRANCH_PATTERN = re.compile(r"^(feature|fix)/[\w.-]+$")
+CONVENTIONAL_COMMIT_PATTERN = re.compile(
+    r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+\))?!?:\s.+"
 )
+
+BRANCH_CREATE_RE = re.compile(r"git\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)")
+COMMIT_MSG_RE = re.compile(r"""git\s+commit\s+[^;|&]*-m\s+(['"])(.*?)\1""")
+
+COMMIT_TYPES = {
+    "add": "feat",
+    "implement": "feat",
+    "create": "feat",
+    "introduce": "feat",
+    "fix": "fix",
+    "repair": "fix",
+    "correct": "fix",
+    "resolve": "fix",
+    "update": "refactor",
+    "change": "refactor",
+    "modify": "refactor",
+    "move": "refactor",
+    "rename": "refactor",
+    "remove": "chore",
+    "delete": "chore",
+    "clean": "chore",
+    "document": "docs",
+    "test": "test",
+}
+
+# Protected branches that should never be validated as feature branches
+PROTECTED_BRANCHES = {"main", "master", "develop", "dev"}
+
+
+# --- Helpers ---
+
+
+def get_branch_pattern():
+    """Load branch naming pattern from docs/git-workflow/branch-strategy.md.
+
+    Falls back to default (feature|fix) if the file doesn't exist
+    or doesn't contain a regex block.
+    """
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", ".")
+    strategy_path = os.path.join(
+        project_dir, "docs", "git-workflow", "branch-strategy.md"
+    )
+    try:
+        with open(strategy_path, "r") as f:
+            content = f.read()
+        match = re.search(r"```regex\n(.+?)\n```", content)
+        if match:
+            return re.compile(match.group(1))
+    except (FileNotFoundError, IOError, re.error):
+        pass
+    return DEFAULT_BRANCH_PATTERN
+
+
+def guess_commit_type(message):
+    """Guess the conventional commit type from a plain message."""
+    first_word = message.strip().split()[0].lower() if message.strip() else ""
+    return COMMIT_TYPES.get(first_word, "feat")
+
+
+def validate_branch(command):
+    """Check branch creation commands for naming convention compliance."""
+    match = BRANCH_CREATE_RE.search(command)
+    if not match:
+        return None
+
+    branch_name = match.group(1)
+
+    if branch_name in PROTECTED_BRANCHES:
+        return None
+
+    pattern = get_branch_pattern()
+    if pattern.match(branch_name):
+        return None
+
+    # Suggest correction
+    suggestion = branch_name
+    if "/" in suggestion:
+        suggestion = suggestion.split("/", 1)[1]
+    suggestion = f"feature/{suggestion}"
+
+    return (
+        f'project-init: Branch "{branch_name}" does not follow naming convention.\n'
+        f"Expected pattern: {pattern.pattern}\n"
+        f"Suggested: git branch -m {suggestion}"
+    )
+
+
+def validate_commit(command):
+    """Check commit commands for Conventional Commits format."""
+    # Skip non-message commits (editor mode, amend without -m, merge)
+    if "merge" in command and "--no-edit" in command:
+        return None
+
+    match = COMMIT_MSG_RE.search(command)
+    if not match:
+        return None
+
+    message = match.group(2)
+
+    # For HEREDOC-style commits, check first line only
+    first_line = message.split("\n")[0].strip()
+
+    if CONVENTIONAL_COMMIT_PATTERN.match(first_line):
+        return None
+
+    suggested_type = guess_commit_type(first_line)
+
+    return (
+        f"project-init: Commit message does not follow Conventional Commits format.\n"
+        f"Expected: <type>(<scope>): <description>\n"
+        f"Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore\n"
+        f"Suggested: {suggested_type}: {first_line}"
+    )
+
+
+# --- Main ---
 
 
 def main():
@@ -32,38 +154,14 @@ def main():
 
     command = tool_input.get("command", "")
 
-    match = BRANCH_CREATE_PATTERN.search(command)
-    if not match:
+    # Try branch validation first, then commit validation
+    warning = validate_branch(command) or validate_commit(command)
+
+    if warning:
+        print(json.dumps({"systemMessage": warning}))
+    else:
         print(json.dumps({}))
-        sys.exit(0)
 
-    branch_name = match.group(1)
-
-    # Allow main branch checkout (not really creation, but defensive)
-    if branch_name == "main":
-        print(json.dumps({}))
-        sys.exit(0)
-
-    if BRANCH_PATTERN.match(branch_name):
-        print(json.dumps({}))
-        sys.exit(0)
-
-    # Suggest correction: strip any wrong prefix and re-add feature/
-    suggestion = branch_name
-    if "/" in suggestion:
-        # Has a wrong prefix like bugfix/ or feat/ — strip it
-        suggestion = suggestion.split("/", 1)[1]
-    suggestion = f"feature/{suggestion}"
-
-    result = {
-        "systemMessage": (
-            f'project-init: Branch "{branch_name}" does not follow naming convention.\n'
-            f"Expected: feature/<description> or fix/<description>\n"
-            f"Suggested: git branch -m {suggestion}"
-        )
-    }
-
-    print(json.dumps(result))
     sys.exit(0)
 
 

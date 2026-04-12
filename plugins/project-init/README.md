@@ -1,49 +1,69 @@
 # project-init
 
-GitHub Flow git workflow plugin for Claude Code. Defines branch naming conventions, branch lifecycle rules, and PR process.
+Git workflow initialization plugin for Claude Code. Generates branching strategy, commit conventions, and PR process rules for any project.
 
 ## Architecture
 
 ```
 plugins/project-init/
-├── .claude-plugin/plugin.json       # Plugin metadata
+├── .claude-plugin/plugin.json       # Plugin metadata (v1.1.0)
 ├── README.md                        # This file
 ├── commands/
-│   └── project-init.md              # /project-init [show|branch|pr]
+│   └── project-init.md              # /project-init — interactive setup
 ├── hooks/
 │   ├── hooks.json                   # PostToolUse hook config
-│   └── post-tool-use.py             # Branch naming validator
-└── skills/
-    └── git-workflow/
-        ├── SKILL.md                 # Git workflow rules
-        └── references/
-            └── branch-naming.md     # Branch naming details
+│   └── post-tool-use.py             # Branch naming + commit message validator
+└── templates/
+    ├── shared/
+    │   ├── commit-conventions.md    # Conventional Commits rules (all strategies)
+    │   └── pr-process.md            # PR template and merge strategy (all strategies)
+    ├── github-flow/
+    │   ├── claude-md-section.md     # CLAUDE.md injection template
+    │   └── branch-strategy.md       # Branch rules + naming pattern
+    ├── git-flow/
+    │   ├── claude-md-section.md
+    │   └── branch-strategy.md
+    └── trunk-based/
+        ├── claude-md-section.md
+        └── branch-strategy.md
 ```
+
+## How It Works
+
+1. Run `/project-init`
+2. Select a branching strategy (GitHub Flow / Git Flow / Trunk-based)
+3. Answer 2-3 customization questions (commit scope, merge strategy)
+4. Plugin generates:
+   - `CLAUDE.md` — minimal Git Workflow section (reference to docs/)
+   - `docs/git-workflow/branch-strategy.md` — branch rules for the team
+   - `docs/git-workflow/commit-conventions.md` — Conventional Commits rules
+   - `docs/git-workflow/pr-process.md` — PR template and review checklist
 
 ## Features
 
 | Component | Role |
 |-----------|------|
-| **git-workflow skill** | Core workflow rules — Claude references this for all git decisions |
-| **PostToolUse hook** | Validates branch naming on `git checkout -b` / `git switch -c` |
-| **`/project-init` command** | User entry point — show rules, create branches, guide PR creation |
+| **`/project-init` command** | Interactive setup — select strategy, generate rules |
+| **PostToolUse hook** | Auto-validates branch naming and commit message format |
+| **Templates** | Pre-built rules for 3 branching strategies |
 
-## Git Workflow Rules
+## Branching Strategies
 
-- **Branch model**: GitHub Flow (`main` + `feature/*` / `fix/*`)
-- **Branch unit**: One branch per plugin (e.g., `feature/project-init`)
-- **Branch naming**: `feature/<name>` or `fix/<name>` (kebab-case)
-- **Branch lifecycle**: Create from `main`; rebase from `main` when continuing work
-- **PR process**: Branch → Work → Push → `gh pr create` → Review → Merge
+| Strategy | Branches | Best for |
+|----------|----------|----------|
+| **GitHub Flow** | `main` + `feature/*` / `fix/*` | Small teams, CI/CD, continuous deployment |
+| **Git Flow** | `main` + `develop` + `feature/*` / `fix/*` / `release/*` / `hotfix/*` | Release cycles, version management |
+| **Trunk-based** | `main` + short-lived `feature/*` / `fix/*` | Fast deployment, feature flags |
 
 ## Integration
 
-Works alongside `quality-gates` plugin — when `gh pr create` runs, quality-gates auto-triggers its 3-gate pipeline.
+Works alongside other plugins:
+- **commit-commands**: `/commit` and `/commit-push-pr` read CLAUDE.md rules to format messages
+- **superpowers**: `using-git-worktrees` follows branch naming conventions from docs/
+- **quality-gates**: Auto-triggers quality pipeline on PR creation
 
 ## Usage
 
 ```
-/project-init              # Show workflow rules
-/project-init branch <n>   # Create branch from main
-/project-init pr           # Guide PR creation
+/project-init    # Start interactive git workflow setup
 ```

@@ -1,5 +1,5 @@
 {
-  "description": "project-init - validates branch naming conventions on branch creation",
+  "description": "project-init - validates branch naming and commit message conventions",
   "hooks": {
     "PostToolUse": [
       {
