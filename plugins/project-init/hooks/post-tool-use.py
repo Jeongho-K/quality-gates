@@ -23,6 +23,10 @@ CONVENTIONAL_COMMIT_PATTERN = re.compile(
 
 BRANCH_CREATE_RE = re.compile(r"git\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)")
 COMMIT_MSG_RE = re.compile(r"""git\s+commit\s+[^;|&]*-m\s+(['"])(.*?)\1""")
+HEREDOC_COMMIT_RE = re.compile(
+    r"""git\s+commit\s+[^;|&]*-m\s+['"]\$\(cat\s+<<['"]?(\w+)['"]?\n(.*?)\n\1""",
+    re.DOTALL,
+)
 
 COMMIT_TYPES = {
     "add": "feat",
@@ -113,13 +117,17 @@ def validate_commit(command):
     if "merge" in command and "--no-edit" in command:
         return None
 
-    match = COMMIT_MSG_RE.search(command)
-    if not match:
-        return None
+    # Try HEREDOC-style commits first (git commit -m "$(cat <<'EOF'...EOF)")
+    heredoc_match = HEREDOC_COMMIT_RE.search(command)
+    if heredoc_match:
+        message = heredoc_match.group(2)
+    else:
+        match = COMMIT_MSG_RE.search(command)
+        if not match:
+            return None
+        message = match.group(2)
 
-    message = match.group(2)
-
-    # For HEREDOC-style commits, check first line only
+    # Check first line only (covers both HEREDOC and normal commits)
     first_line = message.split("\n")[0].strip()
 
     if CONVENTIONAL_COMMIT_PATTERN.match(first_line):
