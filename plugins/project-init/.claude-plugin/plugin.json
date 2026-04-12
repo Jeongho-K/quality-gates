@@ -1,0 +1,8 @@
+{
+  "name": "project-init",
+  "description": "Initialize git workflow rules for any project. Select a branching strategy (GitHub Flow, Git Flow, Trunk-based), generate CLAUDE.md and docs/ with branch naming, Conventional Commits, and PR process rules. Auto-validates via hooks.",
+  "version": "1.1.0",
+  "author": {
+    "name": "jeonghokim"
+  }
+}

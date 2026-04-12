@@ -1,0 +1,17 @@
+{
+  "description": "project-init - validates branch naming and commit message conventions",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
