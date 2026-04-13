@@ -1,6 +1,6 @@
 {
   "name": "quality-gates",
-  "description": "3-gate quality verification pipeline with multi-plugin review delegation. Auto-triggers on PR creation via gh pr create.",
+  "description": "3-gate quality verification pipeline with multi-plugin review delegation. Invoke manually via /qg.",
   "version": "1.3.0",
   "author": {
     "name": "jeonghokim"

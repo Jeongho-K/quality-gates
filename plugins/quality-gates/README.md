@@ -16,8 +16,8 @@ quality-gates/
 │   ├── qg.md               # /qg slash command
 │   └── cancel-qg.md        # /cancel-qg command
 ├── hooks/
-│   ├── hooks.json           # Hook configuration (PostToolUse + Stop)
-│   ├── post-tool-use.py     # Auto-trigger on PR creation
+│   ├── hooks.json           # Hook configuration (Stop)
+│   ├── post-tool-use.py     # (disabled; retained for rollback)
 │   └── stop-hook.py         # Pipeline progression (state machine)
 ├── scripts/
 │   └── setup-qg.sh          # Pipeline initialization
@@ -70,7 +70,7 @@ If code changes are made during review, it **loops back** to Gate 1 to re-verify
 
 ```mermaid
 flowchart TD
-    Start(["/qg or gh pr create"]) --> Setup["setup-qg.sh\n(create state file)"]
+    Start(["/qg"]) --> Setup["setup-qg.sh\n(create state file)"]
     Setup --> G1
 
     subgraph Pipeline ["Stop Hook Pipeline Loop"]
@@ -92,36 +92,6 @@ flowchart TD
     G3 -->|signal: PASS| Done(["Stop Hook\ndeletes state file\nPR ready for merge"])
 ```
 
-## Auto-trigger Flow
-
-When a PR is created via `gh pr create`, the PostToolUse hook triggers the pipeline:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Claude as Claude Code
-    participant PTU as post-tool-use.py
-    participant Setup as setup-qg.sh
-    participant Skill as SKILL.md
-    participant Stop as stop-hook.py
-
-    User->>Claude: gh pr create
-    Claude->>PTU: PostToolUse event
-    PTU->>PTU: Detect "gh pr create"
-    PTU-->>Claude: systemMessage: "Run setup + skill"
-    Claude->>Setup: Bash: setup-qg.sh --pr-url <url>
-    Setup->>Setup: Create state file
-    Claude->>Skill: Gate 1 execution
-    Skill-->>Claude: Gate result + <qg-signal>
-    Claude->>Stop: Stop event (exit attempt)
-    Stop->>Stop: Parse signal, update state
-    Stop-->>Claude: Block + inject Gate 2 prompt
-    Claude->>Skill: Gate 2 execution
-    Note over Claude,Stop: Repeats until all gates pass
-    Stop-->>Claude: Allow exit (pipeline complete)
-    Claude-->>User: Quality Gates Complete
-```
-
 ## Usage
 
 ```
@@ -134,8 +104,6 @@ sequenceDiagram
 /qg --pr-url <url>           # Specify PR URL
 /cancel-qg                   # Cancel active pipeline
 ```
-
-**Auto-trigger:** Create a PR with `gh pr create` and the pipeline starts automatically.
 
 ## Prerequisites
 

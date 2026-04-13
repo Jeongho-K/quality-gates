@@ -4,8 +4,8 @@ description: >
   This skill should be used when the user wants to run quality gates, verify code
   quality, check PR readiness, or run the QG pipeline. Triggered by commands like
   "/qg", "run quality gates", "verify my implementation", "check code quality",
-  "is my PR ready to merge", or automatically on PR creation via hook. Executes a
-  single gate per turn; the Stop hook manages pipeline progression automatically.
+  or "is my PR ready to merge". Executes a single gate per turn; the Stop hook
+  manages pipeline progression automatically.
 ---
 
 # Quality Gates — Gate Executor
@@ -21,7 +21,7 @@ Before parsing arguments or dispatching agents, do this in order:
 **1. Detect continuation vs. first invocation.** Look at the current turn's user
 prompt. If it contains the literal string `# QG-STOP-HOOK-CONTINUATION` on its
 own line, this is a Stop-hook-injected continuation → go to step 2a. Otherwise
-it is a first invocation (via `/qg`, PR auto-trigger, or direct skill call) →
+it is a first invocation (via `/qg` or direct skill call) →
 go to step 2b.
 
 **2a. Continuation path.** The state file MUST exist. Verify:

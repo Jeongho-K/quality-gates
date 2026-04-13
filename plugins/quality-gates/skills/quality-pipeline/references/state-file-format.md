@@ -51,13 +51,12 @@ started_at: "<ISO timestamp>"  # Pipeline start time
 
 ## Lifecycle
 
-1. **Created by**: `scripts/setup-qg.sh` (on `/qg` or auto-trigger)
+1. **Created by**: `scripts/setup-qg.sh` (on `/qg`)
 2. **Updated by**: `hooks/stop-hook.py` (after each gate completes)
 3. **Deleted by**: `hooks/stop-hook.py` (on pipeline complete/abort) or `/cancel-qg`
 
 ## Purpose
 
 - Track pipeline progress across Stop hook iterations
-- Prevent double-triggering (PostToolUse hook checks existence)
 - Store gate results for inter-gate context passing
 - Session isolation (prevent cross-session interference)
