@@ -1,28 +1,23 @@
-# Branch Strategy: Git Flow
+# Branch Strategy: GitHub Flow
 
 ## Model
 
-- `main` — production releases, tagged with version numbers
-- `develop` — integration branch for features, always reflects latest development state
-- `feature/*` — new features, branched from `develop`, merged back to `develop`
-- `fix/*` — bug fixes, branched from `develop`, merged back to `develop`
-- `release/*` — release preparation, branched from `develop`, merged to `main` + `develop`
-- `hotfix/*` — urgent production fixes, branched from `main`, merged to `main` + `develop`
+- `main` is the production branch — always deployable
+- All work happens on short-lived `feature/*` or `fix/*` branches
+- No `develop`, `release`, or `staging` branches
 
 ## Branch Naming Pattern
 
 ```regex
-^(feature|fix|release|hotfix)/[\w.-]+$
+^(feature|fix)/[\w.-]+$
 ```
 
 ## Branch Prefixes
 
-| Prefix | From | Merge to | Example |
-|--------|------|----------|---------|
-| `feature/<name>` | `develop` | `develop` | `feature/user-auth` |
-| `fix/<name>` | `develop` | `develop` | `fix/login-redirect` |
-| `release/<version>` | `develop` | `main` + `develop` | `release/v1.2.0` |
-| `hotfix/<name>` | `main` | `main` + `develop` | `hotfix/critical-crash` |
+| Prefix | Use | Example |
+|--------|-----|---------|
+| `feature/<name>` | New feature or enhancement | `feature/user-auth` |
+| `fix/<name>` | Bug fix | `fix/login-redirect` |
 
 - Use **kebab-case** for the description
 - Keep it concise: 2-4 words
@@ -30,51 +25,36 @@
 
 ## Branch Lifecycle
 
-### Feature / Fix branch
+### Creating a branch
 
-```bash
-git checkout develop
-git pull origin develop
-git checkout -b feature/<name>
-# ... work ...
-# merge back to develop via PR
-```
-
-### Release branch
-
-```bash
-git checkout develop
-git pull origin develop
-git checkout -b release/v<version>
-# ... version bumps, final fixes ...
-# merge to main AND develop via PR
-# tag main: git tag -a v<version> -m "Release v<version>"
-```
-
-### Hotfix branch
+Always start from latest `main`:
 
 ```bash
 git checkout main
 git pull origin main
-git checkout -b hotfix/<name>
-# ... urgent fix ...
-# merge to main AND develop via PR
-# tag main with patch version
+git checkout -b feature/<name>
+```
+
+### Continuing work on an existing branch
+
+Sync with main before continuing. This project prefers **merge** over rebase when syncing an existing feature branch (rebase is disallowed for already-shared branches):
+
+```bash
+git checkout feature/<name>
+git fetch origin
+git merge origin/main
 ```
 
 ### After PR merge
 
-- Delete the branch: `git branch -d <branch-name>`
-- For releases: tag `main` with the version number
+- Delete the branch (usually handled by `gh pr merge --delete-branch`)
+- Or keep and sync from main for follow-up work
 
 ## Rules for Claude
 
 - **ALWAYS** check current branch before starting work: `git branch --show-current`
-- **NEVER** commit directly to `main` or `develop`
-- **ALWAYS** create `feature/*` and `fix/*` branches from `develop`, not from `main`
-- **ALWAYS** create `hotfix/*` branches from `main`
-- **ALWAYS** create `release/*` branches from `develop`
-- When asked to "start working on X" — create a feature branch from `develop`
-- If on `main` or `develop` and about to make changes — STOP and create a branch first
-- When merging a release or hotfix — merge to BOTH `main` and `develop`
-- When switching to an existing feature branch — check if it needs rebase from `develop`
+- **NEVER** commit directly to `main`
+- **ALWAYS** use `feature/*` or `fix/*` branch naming
+- When asked to "start working on X" — create a properly named branch first
+- If on `main` and about to make changes — STOP and create a branch first
+- When syncing an existing feature branch with `main` — use `git merge`, not `git rebase`
