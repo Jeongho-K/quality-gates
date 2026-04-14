@@ -78,26 +78,23 @@ For each **blocking** uncompleted item:
 - If a file was modified but the checkbox isn't checked, flag it as:
   "Possibly implemented but checkbox not updated"
 
-## Step 4.5: Implementation Trace (conditional)
+## Step 4.5: Emit Possibly-Implemented List (report-only)
 
-If `available_plugins` includes `feature-dev` AND there are blocking items classified as "Possibly implemented but checkbox not updated" from Step 4:
+**You do NOT dispatch any sub-agent.** Claude Code does not allow agents to dispatch other agents (`Agent`/`Task` tool with `subagent_type` is not available in agent runtimes — only skills can use it). The quality-pipeline skill orchestrates the implementation trace after you return.
 
-Dispatch the code-explorer agent to trace whether these items are actually wired up and functional:
+Your job is to **emit the list** so the skill can trace it:
 
-Agent(subagent_type="feature-dev:code-explorer",
-  prompt="The implementation plan is at {plan_path}. Read it first to understand
-    the full scope of planned features.
-    Then trace the implementation of the following items that appear to have
-    been partially implemented (files exist in git diff but checkboxes unchecked):
-    {list of 'possibly implemented' items with file paths}
-    For each, verify it is properly wired up and functional.
-    Report which features are fully connected and which have gaps.")
+For each blocking item classified as "Possibly implemented but checkbox not updated" in Step 4, add a bullet under a `### Possibly Implemented (needs trace)` section in your report using this **exact format** — the skill parses it with a regex anchored to the section header and pipe-separated fields:
 
-Integrate the results:
-- Items reported as "fully connected" → upgrade status to "Likely implemented"
-- Items with gaps → keep as "Possibly implemented" (still blocking)
+```
+### Possibly Implemented (needs trace)
+- <item text> | files: <comma-separated paths> | line: <N>
+- <item text> | files: <comma-separated paths> | line: <N>
+```
 
-If `feature-dev` is NOT in `available_plugins`, skip this step entirely.
+If there are no "Possibly implemented" items, omit the section entirely. Do not emit an empty section header.
+
+The skill will read this section, dispatch `feature-dev:code-explorer` if that plugin is available, and integrate the trace results into the Gate 1 verdict. You are not responsible for any of that downstream work.
 
 ## Step 5: Generate Report
 
@@ -120,11 +117,16 @@ Output a structured report in this exact format:
 ### Non-blocking Gaps (informational)
 - [ ] [item text] (Task N, line L)
 
+### Possibly Implemented (needs trace)
+[Emit one bullet per "Possibly implemented" item in the format:
+- <item text> | files: <comma-separated paths> | line: <N>
+Omit the entire section if there are no such items.
+The quality-pipeline skill parses this section and performs the trace.]
+
 ### Implementation Trace (code-explorer)
-[If Step 4.5 was executed:]
-- [item]: fully connected ✓
-- [item]: gap found — [description]
-[If Step 4.5 was skipped: "Skipped (feature-dev plugin not available)"]
+[Leave this section empty in your report. The quality-pipeline skill fills it
+in after dispatching feature-dev:code-explorer (or records "Skipped" with
+a reason if the plugin is unavailable). Do not populate this section yourself.]
 
 ### Verdict: [PASS / FAIL / SKIP]
 [If FAIL: "N blocking items remain unimplemented."]
@@ -139,4 +141,5 @@ Output a structured report in this exact format:
 - If the plan has no checkboxes at all (plain numbered sections), treat each numbered item as a task and check if referenced files exist in git diff
 - Be conservative: when in doubt, classify as blocking
 - Always output the structured report format above — the orchestrator parses it
-- If `feature-dev` is not in `available_plugins`, skip Step 4.5 silently and note "Skipped" in the report
+- NEVER call `Agent()` or `Task()` with `subagent_type` — agent runtimes do not expose these tools. The quality-pipeline skill handles all sub-dispatch
+- If there are no "Possibly implemented" items, omit the `### Possibly Implemented (needs trace)` section entirely — do not emit an empty section header

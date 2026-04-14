@@ -8,10 +8,9 @@
 quality-gates/
 ├── .claude-plugin/         # Plugin metadata
 │   └── plugin.json
-├── agents/                 # Gate agents (dispatched by pipeline)
+├── agents/                 # Gate agents (leaf agents; dispatched by pipeline)
 │   ├── plan-verifier.md    # Gate 1
-│   ├── pr-reviewer.md      # Gate 2
-│   └── runtime-verifier.md # Gate 3
+│   └── runtime-verifier.md # Gate 3  (Gate 2 is orchestrated directly by SKILL.md)
 ├── commands/
 │   ├── qg.md               # /qg slash command
 │   └── cancel-qg.md        # /cancel-qg command
@@ -31,11 +30,13 @@ quality-gates/
 
 ## Gates
 
-| Gate | Agent | Purpose | Delegates To |
-|------|-------|---------|-------------|
-| 1 | plan-verifier | Cross-references plan checkboxes with git diff | feature-dev:code-explorer (impl trace), superpowers:verification-before-completion (evidence) |
-| 2 | pr-reviewer | Orchestrates multi-plugin review agents iteratively | pr-review-toolkit (core review), feature-dev (conventions, architecture), superpowers (plan alignment) |
-| 3 | runtime-verifier | Starts the app, checks console errors, takes screenshots | chrome-devtools-mcp or playwright |
+| Gate | Driven by | Purpose | Delegates To |
+|------|-----------|---------|-------------|
+| 1 | plan-verifier agent | Cross-references plan checkboxes with git diff; emits a "Possibly Implemented (needs trace)" list for the skill to follow up | feature-dev:code-explorer (impl trace, dispatched by skill), superpowers:verification-before-completion (evidence) |
+| 2 | quality-pipeline skill (inline) | Orchestrates multi-plugin review agents iteratively; skill dispatches agents directly because Claude Code does not allow agents to dispatch other agents | pr-review-toolkit (core review), feature-dev (conventions, architecture), superpowers (plan alignment) |
+| 3 | runtime-verifier agent | Starts the app, checks console errors, takes screenshots | chrome-devtools-mcp or playwright |
+
+**Architecture note — why Gate 2 has no agent**: Claude Code only allows skills (not agents) to use `Agent()` with `subagent_type`. Gate 2 needs to dispatch several review agents in phases, so its orchestration logic lives in `skills/quality-pipeline/SKILL.md` directly. Gates 1 and 3 still use leaf agents (they do not dispatch sub-agents). The implementation trace for Gate 1 is a hybrid: the plan-verifier agent detects candidates and the skill dispatches `feature-dev:code-explorer` after the agent returns.
 
 ## Gate 2 Review Phases
 
