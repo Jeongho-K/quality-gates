@@ -6,6 +6,7 @@ description: >
   "/qg", "run quality gates", "verify my implementation", "check code quality",
   or "is my PR ready to merge". Executes a single gate per turn; the Stop hook
   manages pipeline progression automatically.
+cost_class: variable
 ---
 
 # Quality Gates — Gate Executor
@@ -87,6 +88,43 @@ Otherwise (first invocation only), run the pre-flight dependency checks per
 
 ## Gate Execution
 
+### Pre-pipeline check (§F-1)
+
+Before any agent dispatch in the first gate of a fresh pipeline (skip on
+mid-pipeline continuations — Stop hook injection), run:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/pre-pipeline-check.sh"
+```
+
+Parse the output (one `key: value` line per output line):
+
+- `result: active_resume` → continue with existing state file (mid-pipeline resume).
+- `result: cleared_branch_mismatch` → tell user "branch changed; session scope reset."
+- `result: cleared_stale` → tell user "stale session data cleared."
+- `result: fresh_start` | `result: preserved` | `result: no_session_data` → silent.
+
+After the check, if `result == cleared_*`, do NOT use any prior
+`quality-gates-session.local.md` data — proceed as if `--branch` mode is
+implied (full diff against `main`).
+
+### Trivia escape (§E)
+
+Run the trivia detector before Gate 1 dispatch:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/check-trivia.sh"
+```
+
+If exit code is `0`:
+- Read the stdout line `trivia: <kind>` (kind ∈ `whitespace | rename`).
+- Update `.claude/quality-gates.local.md` with `status: completed`,
+  `outcome: trivia-skipped`, `trivia_kind: <kind>`.
+- Emit `<qg-signal verdict="trivia-skipped" reason="<kind>" />` and stop.
+- Tell the user: "Trivia change (`<kind>`); review skipped."
+
+If exit code is non-zero, proceed to Gate 1.
+
 ### Gate 1: Plan Verification
 
 Dispatch the plan-verifier agent:
@@ -162,6 +200,25 @@ Note: This step executes commands but does NOT modify any code.
   - If implement: implement the items, then emit signal with verdict="RETRY"
   - If proceed: emit signal with verdict="PASS_WITH_WARNINGS"
 
+### Gate 1 → Gate 2 handoff format
+
+On PASS (or PASS_WITH_WARNINGS), Gate 1 MUST emit, as the last block of its
+assistant message, a YAML fenced block named `gate1_summary`:
+
+```yaml
+plan_path: <absolute or repo-relative path>
+matched_items: [<plan checkbox text>]
+unmatched_items: [<plan checkbox text>]
+unexpected_files: [<path>]
+verdict: PASS | FAIL | NEEDS_CLARIFICATION
+```
+
+If `verdict` is FAIL, the pipeline halts here (Gate 2 does not run — Law 1).
+If `verdict` is NEEDS_CLARIFICATION, Stop hook injects a user choice
+(clarify / proceed / abort).
+On PASS, the harness passes this block verbatim to Scout (Phase 0) as part
+of its prompt context.
+
 ### Gate 2: PR Review
 
 Gate 2 is orchestrated inline by this skill — the skill dispatches review
@@ -198,9 +255,22 @@ Then run this **single consolidated bash block**. It captures the diff once, wri
 ```bash
 set -e
 
-DIFF_CONTENT=$(git diff)
-
+# Docs filter (§D): exclude *.md, *.txt, *.rst, docs/**, CHANGELOG*, README*
+# from the scope passed to code-reviewer-style agents. Gate 1 plan-verifier
+# already saw the unfiltered diff above; from here on, agents see code paths only.
 mkdir -p .claude
+git diff --name-only \
+  | "${CLAUDE_PLUGIN_ROOT}/scripts/filter-docs.sh" \
+  > .claude/qg-code-paths.tmp
+
+if [ -s .claude/qg-code-paths.tmp ]; then
+  # shellcheck disable=SC2046
+  DIFF_CONTENT=$(git diff -- $(cat .claude/qg-code-paths.tmp))
+else
+  # Docs-only change (rare after trivia escape and Gate 1 PASS): empty diff for code reviewers
+  DIFF_CONTENT=""
+fi
+
 printf '%s' "$DIFF_CONTENT" > .claude/qg-diff-cache.txt
 
 DIFF_CHARS=${#DIFF_CONTENT}
@@ -279,7 +349,72 @@ changed_files_since_last_dispatch: <list or 'none'>
 
 **Never truncate or summarize the diff content when inlining.** The complete unified diff is passed verbatim.
 
-#### Phase 1: Critical Analysis (always run, parallel)
+#### Phase 0: Scout (always run, single dispatch)
+
+**Purpose**: Replace rule-based diff-feature gating with model judgment. Scout reads the filtered diff + Gate 1 summary and returns a structured dispatch plan that overrides the rule-based flags computed in Step 0.
+
+Dispatch:
+
+```
+Agent(
+  subagent_type="quality-gates:scout",
+  model="sonnet",
+  prompt="<filtered diff (≤50KB) or '<diff too large; use git diff>'>
+
+  gate1_summary:
+  <verbatim YAML from Gate 1>
+
+  session_scope: <branch | session | paths> + <applied path list>
+  iteration: <N>"
+)
+```
+
+Parse Scout's YAML output. Validate:
+- `depth ∈ {quick, standard, deep}`
+- `phase1_agents ⊆ {code-reviewer, silent-failure-hunter, feature-dev:code-reviewer}`
+- If `depth == quick` then `phase2_agents` MUST be `[]`
+- All listed agent names are recognized
+
+If validation fails OR scout times out (>60s) OR scout sets `fallback: true`:
+- Emit `<qg-signal verdict="scout-fallback" reason="<json-error|timeout|self-fallback>" />`
+- Tell user: `[quality-gates] scout fallback engaged: <reason>. Using rule-based gating.`
+- Fall through to **Fallback gating** (existing rule-based path below); skip Phase 1 / Phase 2 *depth-aware dispatch* and use the rule-based flags from Step 0 instead.
+
+#### AskUserQuestion hard gate
+
+Compute `len(scout.phase1_agents) + len(scout.phase2_agents)`. If **≥ 4**:
+
+Before dispatching anything, invoke AskUserQuestion:
+
+> Phase 1 (M) + Phase 2 (K) = N reviewer agents.
+> Adversarial + Synthesizer always run on top.
+> Approximate cost: <pull from §Cost classes>.
+>
+> Options:
+> - `proceed` — dispatch as planned.
+> - `phase1-only` — dispatch only Phase 1 agents; skip Phase 2.
+> - `abort` — emit `<qg-signal action="abort" reason="user declined fan-out" />` and stop.
+
+scout/adversarial/synthesizer are infrastructure and excluded from the count.
+
+#### Phase 1: Critical Analysis (depth-aware, parallel)
+
+Dispatch the agents in `scout.phase1_agents` **in parallel** (single tool-call
+block). Model assignment per dispatch:
+
+| agent | quick | standard | deep | model override on Task call |
+|---|---|---|---|---|
+| `pr-review-toolkit:code-reviewer` | (upstream Opus) | (upstream Opus) | (upstream Opus) | none — respect upstream `model: opus` |
+| `pr-review-toolkit:silent-failure-hunter` | — | included | included | `model: "sonnet"` |
+| `feature-dev:code-reviewer` | — | — | included | none — upstream is `model: sonnet` |
+
+For agents whose frontmatter is `inherit`, pass `model: "sonnet"` via Task tool.
+For hardcoded-frontmatter agents, do NOT pass `model` (respect upstream choice — Task 1 design decision).
+
+**Fallback** (when scout-fallback engages): use the legacy "always 3 parallel"
+behavior below.
+
+#### Phase 1 (legacy/fallback): Critical Analysis
 
 Dispatch these agents **in parallel** (single tool-call block with multiple `Agent()` calls).
 
@@ -310,7 +445,28 @@ Wait for all three agents to complete. Collect their findings.
 
 **Individual dispatch failures**: if any single `Agent()` call fails (plugin missing, agent errors, etc.), record `"<agent-name>: dispatch failed: <error>"` in the output report's "Dispatch Failures" section and continue with the remaining agents. Do not abort Gate 2 on a single failure.
 
-#### Phase 2: Conditional Analysis
+#### Phase 2: Scout-recommended dispatch (primary path)
+
+Dispatch ONLY the agents listed in `scout.phase2_agents` (subset of:
+`type-design-analyzer`, `pr-test-analyzer`, `comment-analyzer`,
+`superpowers:code-reviewer`, `feature-dev:code-architect`).
+
+Model overrides per dispatch:
+
+| agent | model override |
+|---|---|
+| `pr-review-toolkit:type-design-analyzer` (inherit) | `model: "sonnet"` |
+| `pr-review-toolkit:pr-test-analyzer` (inherit) | `model: "sonnet"` |
+| `pr-review-toolkit:comment-analyzer` (inherit) | `model: "sonnet"` |
+| `superpowers:code-reviewer` (inherit) | `model: "sonnet"` |
+| `feature-dev:code-architect` (hardcoded sonnet) | none — respect upstream |
+
+If the AskUserQuestion gate above selected `phase1-only`, skip this section
+entirely (and record "Phase 2 skipped: user requested phase1-only").
+
+If scout-fallback engaged, use the rule-based fallback below.
+
+#### Phase 2 (legacy/fallback): Conditional Analysis
 
 Use the flag values parsed from the Step 0 JSON. Every skip must be recorded in the output report — **no silent skips**.
 
@@ -353,6 +509,71 @@ Dispatch prompt (immutable head):
 > Review the unstaged changes against the implementation plan at `{plan_path}`. Check for plan alignment, architectural deviations from planned approach, SOLID principles, and separation of concerns. Categorize issues as Critical, Important, or Suggestions.
 >
 > If the prompt contains a `## Current Diff` section, operate on that diff verbatim. **Do NOT run `git diff` yourself** — the full unified diff is already provided.
+
+#### Phase 1.5: Adversarial (Standard/Deep only)
+
+If `scout.depth ∈ {standard, deep}` AND Phase 1 produced any findings:
+
+Dispatch:
+
+```
+Agent(
+  subagent_type="quality-gates:adversarial",
+  model="opus",
+  prompt="<all Phase 1 + Phase 2 findings as structured YAML>
+  filtered_diff: <verbatim from cache>"
+)
+```
+
+Apply Adversarial verdicts (`confirm` / `downgrade` / `reject`) to the
+finding set BEFORE passing to Synthesizer.
+
+**Conditional re-run on iteration**: when Gate 2 enters a new iteration of
+the within-loop fix-loop, compute the hash of the current Phase 1 finding
+set as `(file, line, severity, summary)` tuples. Compare to previous
+iteration's hash:
+- Same hash → SKIP adversarial (already verified).
+- Different hash → run adversarial.
+
+#### Phase 1.6: Synthesizer (always when Phase 1 ran)
+
+Dispatch:
+
+```
+Agent(
+  subagent_type="quality-gates:synthesizer",
+  model="sonnet",
+  prompt="<all Phase 1 findings + Phase 2 findings + Adversarial verdicts>"
+)
+```
+
+The synthesizer's Markdown output is what the user sees as "Gate 2 Findings"
+(it replaces the raw aggregator dump in the legacy Output Report section).
+
+#### Within-Gate-2 loop — efficient form
+
+The fix-loop (max 5 iterations, preserved) runs scout once per iteration on
+**delta diff** rather than the full diff:
+
+1. Identify changed file set since last iteration: `git diff <last-iter-sha> HEAD --name-only`.
+2. Re-run Scout with only those files in scope.
+3. Dispatch only what scout newly recommends; reuse prior findings for
+   unchanged files.
+4. Apply Phase 1.5 conditional adversarial re-run rule above.
+5. Always run synthesizer.
+
+#### Repeat-detection (no-progress check)
+
+After each iteration, compute:
+- `dispatch_hash = sha256(json(scout_output_minimal))` (depth + phase1_agents + phase2_agents only)
+- `synth_hash = sha256(synthesizer_markdown)`
+
+If both `dispatch_hash` and `synth_hash` are equal to the previous iteration's:
+- Emit `<qg-signal verdict="repeat-detected" />`.
+- Stop hook injects user choice (`gate2_repeat_detected` prompt): proceed (accept findings) / abort.
+
+This guards philosophy AP15 ("loop without repeat detection") even though
+`max_gate2_iterations=5` provides the hard upper bound.
 
 #### Classifying Findings
 
@@ -560,16 +781,25 @@ Read the agent's report. Check the Verdict line.
 The Stop hook may inject special prompts that start with keywords.
 Handle them as follows:
 
-### MAX_TOTAL_ITERATIONS_EXCEEDED
+### GATE2_NEEDS_RESTART (forward-only, replaces former MAX_TOTAL_ITERATIONS path)
 
-Pipeline exceeded maximum total iterations. Present to user:
-1. **Extend** — add 3 more iterations
-2. **Accept as-is** — proceed with current state
-3. **Abort** — stop pipeline
+Gate 2 emitted `NEEDS_RESTART` (code-level changes required). Present:
+1. **Proceed** — accept current findings as-is and continue to Gate 3
+2. **Abort** — stop pipeline; user will apply changes and re-run `/qg`
 
 Based on choice:
-- Extend: `<qg-signal action="extend" additional="3" />`
-- Accept: `<qg-signal action="complete" />`
+- Proceed: `<qg-signal gate="2" verdict="PASS_WITH_WARNINGS" summary="User accepted findings" files_changed="" />`
+- Abort: `<qg-signal action="abort" reason="User chose to abort" />`
+
+### GATE2_REPEAT_DETECTED
+
+Gate 2 within-loop is not converging (same dispatch plan + synthesizer
+output for two iterations in a row). Present:
+1. **Proceed** — accept findings as-is
+2. **Abort** — stop pipeline
+
+Based on choice:
+- Proceed: `<qg-signal gate="2" verdict="PASS_WITH_WARNINGS" summary="Repeat detected; user accepted" files_changed="" />`
 - Abort: `<qg-signal action="abort" reason="User chose to abort" />`
 
 ### GATE2_MAX_EXCEEDED

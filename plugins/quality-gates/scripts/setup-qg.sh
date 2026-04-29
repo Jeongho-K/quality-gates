@@ -188,9 +188,7 @@ cat > "$TEMP_FILE" << EOF
 ---
 status: $STATUS
 current_gate: $CURRENT_GATE
-total_iterations: 1
 gate2_iteration: 0
-max_total_iterations: 5
 max_gate2_iterations: 5
 skip_runtime: $SKIP_RUNTIME
 single_gate: ${SINGLE_GATE:-null}

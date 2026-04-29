@@ -1,5 +1,7 @@
 ---
 name: runtime-verifier
+model: sonnet
+cost_class: low
 color: green
 description: >
   Use this agent for runtime verification of applications as Gate 3 of the

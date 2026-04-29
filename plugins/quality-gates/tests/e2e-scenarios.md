@@ -1,0 +1,157 @@
+# Quality-Gates v1.5.0 — E2E Verification Scenarios
+
+This document records the manual verification scenarios for the v1.5.0 redesign.
+Live `/qg` runs require an interactive Claude Code session against a real PR;
+this file specifies *what to test* and *what passing looks like* so a reviewer
+or a future re-verification can reproduce the results.
+
+A static-checks summary is at the bottom.
+
+## Setup (once)
+
+1. Confirm branch is `feature/qg-cost-reduction` merged or rebased on `main`.
+2. Confirm `pr-review-toolkit`, `feature-dev`, and `superpowers` plugins are
+   installed (`/plugin list`).
+3. Confirm tests pass:
+   ```bash
+   python3 -m unittest discover plugins/quality-gates/tests -v
+   ```
+   Expected: 23 tests pass.
+
+## Scenarios
+
+### A — Trivia (whitespace)
+**Setup**: pick any single source file; add one trailing-whitespace edit.
+**Run**: `/qg`
+**Expected**: instant PASS, 0 dispatches. State file shows `outcome: trivia-skipped`, `trivia_kind: whitespace`. Pipeline message says "Trivia change (whitespace); review skipped."
+
+### A2 — Trivia (rename)
+**Setup**: `git mv old.py new.py` with no other edits.
+**Run**: `/qg`
+**Expected**: instant PASS, 0 dispatches. `trivia_kind: rename`.
+
+### A3 — NOT trivia (comment-only safety check)
+**Setup**: edit one comment line (single file, ≤3 lines, but not whitespace/rename).
+**Run**: `/qg`
+**Expected**: trivia escape does NOT fire. Pipeline proceeds to Gate 1, then Quick depth in Gate 2. Confirms our intentional decision to leave comment-only outside the trivia path (language fragility).
+
+### B — Quick (small single-file diff)
+**Setup**: single Python file, ~30 LOC change, no new files.
+**Run**: `/qg`
+**Expected** dispatches in order:
+- scout (Sonnet) → emits `depth: quick`, `phase1_agents: [code-reviewer]`, `phase2_agents: []`
+- pr-review-toolkit:code-reviewer (upstream Opus) — Phase 1
+- synthesizer (Sonnet) — Phase 1.6
+Total: 3 dispatches. AskUserQuestion does NOT fire (Phase 1+2 = 1 < 4).
+
+### C — Standard (multi-file, mid-size)
+**Setup**: ~100 LOC across two files.
+**Run**: `/qg`
+**Expected** dispatches:
+- scout → `depth: standard`, `phase1_agents: [code-reviewer, silent-failure-hunter]`, `phase2_agents` of 0–2 specialists
+- code-reviewer (Opus, upstream) + silent-failure-hunter (Sonnet override) — Phase 1
+- 0–2 Phase 2 agents per scout's plan (Sonnet)
+- adversarial (Opus) — Phase 1.5
+- synthesizer (Sonnet) — Phase 1.6
+Total: 5–7 dispatches. AskUserQuestion fires only if Phase 1+2 ≥ 4.
+
+### D — Deep (large diff, AskUserQuestion gate)
+**Setup**: ≥200 LOC AND new file added AND a config file (`*.json` / `*.toml`) touched.
+**Run**: `/qg`
+**Expected**:
+- scout → `depth: deep`, `phase1_agents: [code-reviewer, silent-failure-hunter, feature-dev:code-reviewer]`, `phase2_agents` likely 2 (e.g., `type-design-analyzer` + `feature-dev:code-architect`).
+- Phase 1+2 = 5 ≥ 4 → **AskUserQuestion fires** with the three options.
+- Choose `phase1-only` → Phase 2 skipped; only Phase 1 (3) + adversarial + synth = 5 dispatches.
+
+### E — No cross-gate restart
+**Setup**: PR with code that intentionally has a Gate 2 issue requiring file changes (e.g., bug that the reviewer will spot).
+**Run**: `/qg`
+**Expected**: Gate 2 emits `NEEDS_RESTART` after fix-loop exhaustion → user-choice prompt fires (`gate2_user_choice`). Pipeline does NOT auto-restart from Gate 1. User picks "Apply changes and re-run `/qg`" → pipeline ends with abort signal.
+
+### F — Within-Gate-2 fix loop
+**Setup**: PR where Phase 1 finds CRITICAL issues that the skill can fix in-place.
+**Run**: `/qg`
+**Expected**: fix → re-run scout (delta diff: only changed files) → narrower dispatch → either PASS or another fix iteration. After ≤5 iterations, either PASS or `gate2_max_exceeded` user-choice fires.
+
+### G — `/qg --paths` override
+**Setup**: edit files outside `plugins/quality-gates/`.
+**Run**: `/qg --paths "plugins/quality-gates/**"`
+**Expected**: scout sees only the matched paths (the others are excluded from diff). Session-files content is ignored.
+
+### H — Cross-plugin model respect
+**Run**: any /qg invocation that dispatches `pr-review-toolkit:code-reviewer`.
+**Inspect**: state file dispatch summary should show `model: opus` for that agent (upstream-hardcoded, not overridden), while `inherit` agents show `model: sonnet` (Task 1 model-override experiment confirmed this works).
+
+### I — Repeat detection
+**Setup**: contrive a PR where Phase 1 finds the same finding twice (e.g., the auto-fix doesn't actually fix the root cause).
+**Run**: `/qg`
+**Expected**: after iteration 2 with identical scout dispatch hash + synthesizer hash, `<qg-signal verdict="repeat-detected" />` is emitted. Stop hook injects `gate2_repeat_detected` user-choice prompt before reaching `max_gate2_iterations=5`.
+
+### J — Branch-mismatch mid-session
+**Run**: edit a file on `feature/qg-cost-reduction`, then `git checkout main`, then `/qg`.
+**Expected**: pre-pipeline-check.sh reports `result: cleared_branch_mismatch`, both `quality-gates-session.local.md` and `quality-gates.local.md` (if any) are deleted, user is told "branch changed; session scope reset." Pipeline proceeds with full-branch diff (since session data is gone).
+
+### K — `/qg --reset` kill switch
+**Setup**: any active or stale state files in `.claude/`.
+**Run**: `/qg --reset`
+**Expected**: `quality-gates.local.md`, `quality-gates-session.local.md`, `quality-gates-branch.local.md`, plus `qg-diff-cache.txt` and `qg-code-paths.tmp` all removed. Message "Quality-gates state cleared."
+
+### L — `DEVBREW_DISABLE_QUALITY_GATES=1`
+**Run**: set env var, then trigger any Edit/Write tool call AND start a new Claude Code session AND attempt `/qg`.
+**Expected**: PostToolUse session-tracker is no-op (no session file written). SessionStart advisor is silent. `/qg` should also detect the env var (this happens via the setup script and skill check; not yet covered by a test, but the existing kill-switch tests for individual hooks confirm the propagation).
+
+## Static Wiring Checks (automated)
+
+Run this from repo root any time:
+
+```bash
+python3 -c "
+import yaml, json, os
+print('Agents (model + cost_class):')
+for a in ['scout','adversarial','synthesizer','plan-verifier','runtime-verifier']:
+    fm = open(f'plugins/quality-gates/agents/{a}.md').read().split('---')[1]
+    d = yaml.safe_load(fm)
+    print(f'  {a}: model={d.get(\"model\")}, cost_class={d.get(\"cost_class\")}')
+print()
+print('SKILL cost_class:', yaml.safe_load(open('plugins/quality-gates/skills/quality-pipeline/SKILL.md').read().split('---')[1])['cost_class'])
+print('plugin.json version:', json.load(open('plugins/quality-gates/.claude-plugin/plugin.json'))['version'])
+print('Hooks registered:')
+for ev, lst in json.load(open('plugins/quality-gates/hooks/hooks.json'))['hooks'].items():
+    for entry in lst:
+        for hook in entry['hooks']:
+            print(f'  {ev}: {hook[\"command\"].split(chr(47))[-1]}')
+"
+
+python3 -m unittest discover plugins/quality-gates/tests -v 2>&1 | tail -3
+```
+
+Expected output (final state):
+
+```
+Agents (model + cost_class):
+  scout: model=sonnet, cost_class=low
+  adversarial: model=opus, cost_class=low
+  synthesizer: model=sonnet, cost_class=low
+  plan-verifier: model=sonnet, cost_class=low
+  runtime-verifier: model=sonnet, cost_class=low
+
+SKILL cost_class: variable
+plugin.json version: 1.5.0
+Hooks registered:
+  Stop: stop-hook.py
+  PostToolUse: post-tool-use-session-tracker.py
+  SessionStart: session-start-advisor.py
+
+Ran 23 tests in 0.NNNs
+OK
+```
+
+## Out-of-Scope for This Verification
+
+- Live cost telemetry (recording actual $ per run for each depth tier) —
+  needs a real billing endpoint; deferred to first-week-after-merge metrics.
+- A/B comparison vs v1.4.0 baseline — needs the same PR run on both versions;
+  recommended for the first 5 PRs after merge.
+- Automated E2E test harness — would require a Claude Code subprocess invocation
+  pattern that the current toolchain does not standardize. Manual verification
+  via the scenarios above is the contract.

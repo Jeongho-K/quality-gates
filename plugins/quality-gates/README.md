@@ -2,6 +2,20 @@
 
 3-gate quality verification pipeline for Claude Code with multi-plugin review delegation.
 
+## Principles Instantiated
+
+This plugin instantiates the following devbrew laws/principles
+(see [`docs/philosophy/devbrew-harness-philosophy.md`](../../docs/philosophy/devbrew-harness-philosophy.md)
+once that file lands on `main`):
+
+- **Law 1 (Clarity Before Code)** — Gate 1 plan-verifier blocks Gate 2 entry on FAIL via the `gate1_summary` YAML handoff.
+- **Law 2 (Writer ≠ Reviewer)** — every reviewer agent declares `disallowedTools: [Write, Edit, MultiEdit, NotebookEdit]`.
+- **Law 3 (Compounding)** — scout `rationale` field is logged to state file per iteration; reviewer-persona edits are how we encode lessons learned.
+- **AP3 (Trivia ceremony) avoidance** — `check-trivia.sh` skips pipeline entirely on whitespace/rename ≤3 lines single-file changes.
+- **AP9 (Subagent spray) hard gate** — AskUserQuestion fires when Phase 1+2 dispatch count ≥ 4.
+- **AP15 (Unbounded autonomy) avoidance** — within-Gate-2 loop bounded by `max_gate2_iterations=5` + repeat-detection (no-progress check) + kill switches.
+- **P21 (Markdown state, not JSON)** — `.claude/quality-gates*.local.md` files (auto-ignored by `*.local.md` gitignore pattern).
+
 ## Architecture
 
 ```
@@ -10,16 +24,24 @@ quality-gates/
 │   └── plugin.json
 ├── agents/                 # Gate agents (leaf agents; dispatched by pipeline)
 │   ├── plan-verifier.md    # Gate 1
-│   └── runtime-verifier.md # Gate 3  (Gate 2 is orchestrated directly by SKILL.md)
+│   ├── runtime-verifier.md # Gate 3 (Gate 2 is orchestrated directly by SKILL.md)
+│   ├── scout.md            # Phase 0 of Gate 2 — model-driven dispatch planner
+│   ├── adversarial.md      # Phase 1.5 of Gate 2 — false-positive hunter
+│   └── synthesizer.md      # Phase 1.6 of Gate 2 — dedupe/rank findings
 ├── commands/
-│   ├── qg.md               # /qg slash command
+│   ├── qg.md               # /qg slash command (with --reset, --paths, branch flags)
 │   └── cancel-qg.md        # /cancel-qg command
 ├── hooks/
-│   ├── hooks.json           # Hook configuration (Stop)
-│   ├── post-tool-use.py     # (disabled; retained for rollback)
-│   └── stop-hook.py         # Pipeline progression (state machine)
+│   ├── hooks.json                            # Hook configuration
+│   ├── stop-hook.py                          # Pipeline progression (state machine)
+│   ├── post-tool-use-session-tracker.py      # Tracks files edited this session
+│   ├── session-start-advisor.py              # Read-only advisor for in-flight pipelines
+│   └── post-tool-use.py                      # (disabled; retained for rollback)
 ├── scripts/
-│   └── setup-qg.sh          # Pipeline initialization
+│   ├── setup-qg.sh                           # Pipeline initialization
+│   ├── pre-pipeline-check.sh                 # In-skill session-lifecycle check
+│   ├── check-trivia.sh                       # Trivia escape detector
+│   └── filter-docs.sh                        # Docs-path filter for code reviewers
 └── skills/
     └── quality-pipeline/
         ├── SKILL.md         # Single-gate executor
@@ -28,82 +50,89 @@ quality-gates/
             └── state-file-format.md  # Pipeline state file format
 ```
 
+## Hooks Installed
+
+| Hook | Event | Mutating? | Why a hook (not a skill)? |
+|---|---|---|---|
+| `stop-hook.py` | Stop | yes (state file) | Pipeline progression must run *after* every assistant turn. |
+| `post-tool-use-session-tracker.py` | PostToolUse(Edit/Write/MultiEdit) | yes (session file) | Must observe every file mutation deterministically; only a hook can. |
+| `session-start-advisor.py` | SessionStart | **no — read-only advisor** | Surface in-flight pipelines without mutation (CLAUDE.md hook coexistence rule). |
+
+All hooks honor `DEVBREW_DISABLE_QUALITY_GATES=1` (global) and the per-hook
+override `DEVBREW_SKIP_HOOKS=quality-gates:<hook-name>`.
+
+## Cost Classes
+
+The `quality-pipeline` skill is `cost_class: variable` — actual cost depends on auto-detected depth:
+
+| Depth | Cost vs default-Opus baseline |
+|---|---|
+| Trivia | ~0% (instant skip) |
+| Quick | ~25–35% |
+| Standard | ~30–45% |
+| Deep | ~55–75% (AskUserQuestion gate fires) |
+
+See [`commands/qg.md`](commands/qg.md) for trigger criteria and override flags.
+
 ## Gates
 
 | Gate | Driven by | Purpose | Delegates To |
 |------|-----------|---------|-------------|
-| 1 | plan-verifier agent | Cross-references plan checkboxes with git diff; emits a "Possibly Implemented (needs trace)" list for the skill to follow up | feature-dev:code-explorer (impl trace, dispatched by skill), superpowers:verification-before-completion (evidence) |
-| 2 | quality-pipeline skill (inline) | Orchestrates multi-plugin review agents iteratively; skill dispatches agents directly because Claude Code does not allow agents to dispatch other agents | pr-review-toolkit (core review), feature-dev (conventions, architecture), superpowers (plan alignment) |
+| 1 | plan-verifier agent | Cross-references plan checkboxes with git diff; emits `gate1_summary` YAML handoff to Gate 2 | feature-dev:code-explorer (impl trace), superpowers:verification-before-completion (evidence) |
+| 2 | quality-pipeline skill (inline) | Scout-driven orchestration: depth-aware dispatch + Phase 1.5 adversarial + Phase 1.6 synthesizer | pr-review-toolkit, feature-dev, superpowers (review agents) |
 | 3 | runtime-verifier agent | Starts the app, checks console errors, takes screenshots | chrome-devtools-mcp or playwright |
 
-**Architecture note — why Gate 2 has no agent**: Claude Code only allows skills (not agents) to use `Agent()` with `subagent_type`. Gate 2 needs to dispatch several review agents in phases, so its orchestration logic lives in `skills/quality-pipeline/SKILL.md` directly. Gates 1 and 3 still use leaf agents (they do not dispatch sub-agents). The implementation trace for Gate 1 is a hybrid: the plan-verifier agent detects candidates and the skill dispatches `feature-dev:code-explorer` after the agent returns.
+**Architecture note — why Gate 2 has no agent**: Claude Code only allows skills (not agents) to use `Agent()` with `subagent_type`. Gate 2 needs to dispatch several review agents in phases, so its orchestration logic lives in `skills/quality-pipeline/SKILL.md` directly. Gates 1 and 3 still use leaf agents (they do not dispatch sub-agents).
 
-## Gate 2 Review Phases
+## Gate 2 Review Phases (v1.5.0 redesign)
 
 ```
-Phase 1 (Critical, always run, parallel):
-  ├── pr-review-toolkit:code-reviewer        → bugs, security, logic
-  ├── pr-review-toolkit:silent-failure-hunter → error handling
-  └── feature-dev:code-reviewer              → conventions, guidelines
-
-Phase 2 (Conditional):
+Phase 0  Scout (always, sonnet) — produces dispatch plan: depth + agent subset
+Phase 1  Critical analysis (depth-aware, parallel)
+  ├── pr-review-toolkit:code-reviewer        (always; upstream Opus)
+  ├── pr-review-toolkit:silent-failure-hunter (Standard/Deep; sonnet override)
+  └── feature-dev:code-reviewer              (Deep only)
+Phase 2  Conditional (scout-recommended only)
   ├── pr-review-toolkit:type-design-analyzer  → new types
   ├── pr-review-toolkit:pr-test-analyzer      → test changes
   ├── pr-review-toolkit:comment-analyzer      → documentation
   ├── superpowers:code-reviewer               → plan alignment
   └── feature-dev:code-architect              → architecture
-
-Phase 3 (Polish, non-blocking):
-  └── pr-review-toolkit:code-simplifier       → simplification
+Phase 1.5  Adversarial (Standard/Deep, opus) — false-positive hunting
+Phase 1.6  Synthesizer (always when Phase 1 ran, sonnet) — dedupe/rank
+Phase 3  Polish (one-shot, upstream Opus): pr-review-toolkit:code-simplifier
 ```
 
-## Pipeline Flow
+AskUserQuestion fires when `len(phase1) + len(phase2) >= 4` (philosophy AP9).
 
-The pipeline uses a **Stop hook** for automatic gate progression. Each gate runs as a
-separate turn; the Stop hook reads the `<qg-signal>` tag emitted by the gate executor,
-computes the next state, and injects the next gate's prompt.
+## Pipeline Flow (forward-only state machine, v1.5.0)
 
 ```
-/qg → setup-qg.sh → SKILL.md (Gate 1) → Stop hook → SKILL.md (Gate 2) → Stop hook → SKILL.md (Gate 3) → done
+/qg → setup-qg.sh → pre-pipeline-check → trivia escape?
+   ├── yes → instant PASS, 0 dispatches
+   └── no → SKILL.md (Gate 1) → Stop hook → SKILL.md (Gate 2)
+              → Stop hook → SKILL.md (Gate 3) → done
 ```
 
-If code changes are made during review, it **loops back** to Gate 1 to re-verify.
-
-```mermaid
-flowchart TD
-    Start(["/qg"]) --> Setup["setup-qg.sh\n(create state file)"]
-    Setup --> G1
-
-    subgraph Pipeline ["Stop Hook Pipeline Loop"]
-        G1["Gate 1\nPlan Verification"]
-        G1 -->|signal: PASS| StopH1["Stop Hook\n→ Gate 2 prompt"]
-        G1 -->|signal: RETRY| G1
-        StopH1 --> G2
-
-        G2["Gate 2\nPR Review"]
-        G2 -->|signal: PASS| StopH2["Stop Hook\n→ Gate 3 prompt"]
-        G2 -->|signal: NEEDS_RESTART| StopH3["Stop Hook\n→ Gate 1 prompt"]
-        StopH3 --> G1
-        StopH2 --> G3
-
-        G3["Gate 3\nRuntime Verification"]
-        G3 -->|signal: NEEDS_RESTART| StopH3
-    end
-
-    G3 -->|signal: PASS| Done(["Stop Hook\ndeletes state file\nPR ready for merge"])
-```
+**Cross-gate restart removed in v1.5.0**: Gate 2 / Gate 3 NEEDS_RESTART verdicts
+now terminate with a user-choice prompt ("apply changes and re-run /qg") instead
+of auto-restarting from Gate 1. The within-Gate-2 fix-loop (max 5 iterations)
+is preserved.
 
 ## Usage
 
 ```
-/qg                          # Full pipeline: Gate 1 → 2 → 3
-/qg gate1                    # Plan verification only
-/qg gate2                    # PR review only
-/qg gate3                    # Runtime verification only
-/qg --skip-runtime           # Gates 1 & 2 only
-/qg --plan <path>            # Use specific plan file
-/qg --pr-url <url>           # Specify PR URL
-/cancel-qg                   # Cancel active pipeline
+/qg                            # Full pipeline; session-scoped diff
+/qg branch                     # Full pipeline; full-branch diff vs main
+/qg --paths <glob>...          # Full pipeline; explicit path scope
+/qg --reset                    # Clear all session state files and exit
+/qg gate1                      # Plan verification only
+/qg gate2                      # PR review only
+/qg gate3                      # Runtime verification only
+/qg --skip-runtime             # Gates 1 & 2 only
+/qg --plan <path>              # Use specific plan file
+/qg --pr-url <url>             # Specify PR URL
+/cancel-qg                     # Cancel active pipeline
 ```
 
 ## Prerequisites
@@ -117,9 +146,19 @@ flowchart TD
 
 ## Configuration
 
-- `MAX_TOTAL_ITERATIONS`: 5 (full pipeline restarts)
 - `MAX_GATE2_ITERATIONS`: 5 (review-fix cycles within Gate 2)
+- `QG_STALE_HOURS`: 24 (session file staleness threshold for pre-pipeline-check.sh)
 
-## State File
+(`MAX_TOTAL_ITERATIONS` and the cross-gate restart loop were removed in v1.5.0.)
 
-Pipeline state is tracked in `.claude/quality-gates.local.md` (auto-created by setup script, auto-deleted by stop hook on completion).
+## State Files
+
+Pipeline state is tracked in `.claude/`:
+
+| File | Owner | Created by | Deleted by |
+|---|---|---|---|
+| `quality-gates.local.md` | stop-hook.py + setup-qg.sh | setup-qg.sh | stop-hook.py on completion |
+| `quality-gates-session.local.md` | post-tool-use-session-tracker.py | first Edit/Write of the session | pre-pipeline-check.sh on branch mismatch / stale; `/qg --reset` |
+| `quality-gates-branch.local.md` | pre-pipeline-check.sh | first `/qg` invocation per branch | `/qg --reset` |
+
+All match the `*.local.md` gitignore pattern; no `.gitignore` changes are needed.

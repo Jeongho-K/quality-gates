@@ -1,5 +1,7 @@
 ---
 name: plan-verifier
+model: sonnet
+cost_class: low
 color: cyan
 description: >
   Use this agent to verify implementation completeness against a plan file.

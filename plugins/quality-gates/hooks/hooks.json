@@ -1,5 +1,5 @@
 {
-  "description": "Quality Gates - Stop hook for pipeline progression",
+  "description": "Quality Gates - Stop hook for pipeline progression + PostToolUse session-tracker for /qg scope",
   "hooks": {
     "Stop": [
       {
@@ -8,6 +8,27 @@
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.py",
             "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use-session-tracker.py"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/session-start-advisor.py"
           }
         ]
       }
