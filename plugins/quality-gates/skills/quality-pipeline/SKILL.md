@@ -6,6 +6,7 @@ description: >
   "/qg", "run quality gates", "verify my implementation", "check code quality",
   or "is my PR ready to merge". Executes a single gate per turn; the Stop hook
   manages pipeline progression automatically.
+cost_class: variable
 ---
 
 # Quality Gates — Gate Executor
@@ -87,6 +88,26 @@ Otherwise (first invocation only), run the pre-flight dependency checks per
 
 ## Gate Execution
 
+### Pre-pipeline check (§F-1)
+
+Before any agent dispatch in the first gate of a fresh pipeline (skip on
+mid-pipeline continuations — Stop hook injection), run:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/pre-pipeline-check.sh"
+```
+
+Parse the output (one `key: value` line per output line):
+
+- `result: active_resume` → continue with existing state file (mid-pipeline resume).
+- `result: cleared_branch_mismatch` → tell user "branch changed; session scope reset."
+- `result: cleared_stale` → tell user "stale session data cleared."
+- `result: fresh_start` | `result: preserved` | `result: no_session_data` → silent.
+
+After the check, if `result == cleared_*`, do NOT use any prior
+`quality-gates-session.local.md` data — proceed as if `--branch` mode is
+implied (full diff against `main`).
+
 ### Gate 1: Plan Verification
 
 Dispatch the plan-verifier agent:
@@ -161,6 +182,25 @@ Note: This step executes commands but does NOT modify any code.
   Ask: "N blocking items remain. Should I implement them, or proceed anyway?"
   - If implement: implement the items, then emit signal with verdict="RETRY"
   - If proceed: emit signal with verdict="PASS_WITH_WARNINGS"
+
+### Gate 1 → Gate 2 handoff format
+
+On PASS (or PASS_WITH_WARNINGS), Gate 1 MUST emit, as the last block of its
+assistant message, a YAML fenced block named `gate1_summary`:
+
+```yaml
+plan_path: <absolute or repo-relative path>
+matched_items: [<plan checkbox text>]
+unmatched_items: [<plan checkbox text>]
+unexpected_files: [<path>]
+verdict: PASS | FAIL | NEEDS_CLARIFICATION
+```
+
+If `verdict` is FAIL, the pipeline halts here (Gate 2 does not run — Law 1).
+If `verdict` is NEEDS_CLARIFICATION, Stop hook injects a user choice
+(clarify / proceed / abort).
+On PASS, the harness passes this block verbatim to Scout (Phase 0) as part
+of its prompt context.
 
 ### Gate 2: PR Review
 
