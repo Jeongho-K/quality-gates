@@ -2,7 +2,10 @@
 """PostToolUse hook: track files edited in this session for /qg scope.
 
 Appends absolute file paths to .claude/quality-gates-session.local.md.
-Triggered by Edit, Write, MultiEdit. Idempotent (dedup). Fast (no fsync).
+Triggered by Edit, Write, MultiEdit. Idempotent (dedup). No fsync.
+
+Performance: ~10ms per call (Python interpreter cold-start dominates).
+Hook logic itself is sub-millisecond: read state file, set-union, atomic rename.
 
 Kill switches:
   DEVBREW_DISABLE_QUALITY_GATES=1   - disables this hook entirely
@@ -39,7 +42,8 @@ def _read_existing(path: Path) -> set[str]:
 
 def _write_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # PID-suffixed tmp avoids clobber if two hook invocations race.
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     tmp.write_text(content)
     tmp.replace(path)
 

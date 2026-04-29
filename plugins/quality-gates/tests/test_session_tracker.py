@@ -83,6 +83,23 @@ class TestSessionTracker(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(os.path.join(self.tmp, "rel/path.py"), state.read_text())
 
+    def test_kill_switch_skip_hooks(self):
+        env = os.environ.copy()
+        env["DEVBREW_SKIP_HOOKS"] = "quality-gates:session-tracker"
+        proc = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps(
+                {"tool_name": "Edit", "tool_input": {"file_path": "/abs/s.py"}}
+            ),
+            capture_output=True,
+            text=True,
+            cwd=self.tmp,
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 0)
+        state = Path(self.tmp) / ".claude" / "quality-gates-session.local.md"
+        self.assertFalse(state.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
