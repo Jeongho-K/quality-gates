@@ -349,7 +349,72 @@ changed_files_since_last_dispatch: <list or 'none'>
 
 **Never truncate or summarize the diff content when inlining.** The complete unified diff is passed verbatim.
 
-#### Phase 1: Critical Analysis (always run, parallel)
+#### Phase 0: Scout (always run, single dispatch)
+
+**Purpose**: Replace rule-based diff-feature gating with model judgment. Scout reads the filtered diff + Gate 1 summary and returns a structured dispatch plan that overrides the rule-based flags computed in Step 0.
+
+Dispatch:
+
+```
+Agent(
+  subagent_type="quality-gates:scout",
+  model="sonnet",
+  prompt="<filtered diff (≤50KB) or '<diff too large; use git diff>'>
+
+  gate1_summary:
+  <verbatim YAML from Gate 1>
+
+  session_scope: <branch | session | paths> + <applied path list>
+  iteration: <N>"
+)
+```
+
+Parse Scout's YAML output. Validate:
+- `depth ∈ {quick, standard, deep}`
+- `phase1_agents ⊆ {code-reviewer, silent-failure-hunter, feature-dev:code-reviewer}`
+- If `depth == quick` then `phase2_agents` MUST be `[]`
+- All listed agent names are recognized
+
+If validation fails OR scout times out (>60s) OR scout sets `fallback: true`:
+- Emit `<qg-signal verdict="scout-fallback" reason="<json-error|timeout|self-fallback>" />`
+- Tell user: `[quality-gates] scout fallback engaged: <reason>. Using rule-based gating.`
+- Fall through to **Fallback gating** (existing rule-based path below); skip Phase 1 / Phase 2 *depth-aware dispatch* and use the rule-based flags from Step 0 instead.
+
+#### AskUserQuestion hard gate
+
+Compute `len(scout.phase1_agents) + len(scout.phase2_agents)`. If **≥ 4**:
+
+Before dispatching anything, invoke AskUserQuestion:
+
+> Phase 1 (M) + Phase 2 (K) = N reviewer agents.
+> Adversarial + Synthesizer always run on top.
+> Approximate cost: <pull from §Cost classes>.
+>
+> Options:
+> - `proceed` — dispatch as planned.
+> - `phase1-only` — dispatch only Phase 1 agents; skip Phase 2.
+> - `abort` — emit `<qg-signal action="abort" reason="user declined fan-out" />` and stop.
+
+scout/adversarial/synthesizer are infrastructure and excluded from the count.
+
+#### Phase 1: Critical Analysis (depth-aware, parallel)
+
+Dispatch the agents in `scout.phase1_agents` **in parallel** (single tool-call
+block). Model assignment per dispatch:
+
+| agent | quick | standard | deep | model override on Task call |
+|---|---|---|---|---|
+| `pr-review-toolkit:code-reviewer` | (upstream Opus) | (upstream Opus) | (upstream Opus) | none — respect upstream `model: opus` |
+| `pr-review-toolkit:silent-failure-hunter` | — | included | included | `model: "sonnet"` |
+| `feature-dev:code-reviewer` | — | — | included | none — upstream is `model: sonnet` |
+
+For agents whose frontmatter is `inherit`, pass `model: "sonnet"` via Task tool.
+For hardcoded-frontmatter agents, do NOT pass `model` (respect upstream choice — Task 1 design decision).
+
+**Fallback** (when scout-fallback engages): use the legacy "always 3 parallel"
+behavior below.
+
+#### Phase 1 (legacy/fallback): Critical Analysis
 
 Dispatch these agents **in parallel** (single tool-call block with multiple `Agent()` calls).
 
@@ -380,7 +445,28 @@ Wait for all three agents to complete. Collect their findings.
 
 **Individual dispatch failures**: if any single `Agent()` call fails (plugin missing, agent errors, etc.), record `"<agent-name>: dispatch failed: <error>"` in the output report's "Dispatch Failures" section and continue with the remaining agents. Do not abort Gate 2 on a single failure.
 
-#### Phase 2: Conditional Analysis
+#### Phase 2: Scout-recommended dispatch (primary path)
+
+Dispatch ONLY the agents listed in `scout.phase2_agents` (subset of:
+`type-design-analyzer`, `pr-test-analyzer`, `comment-analyzer`,
+`superpowers:code-reviewer`, `feature-dev:code-architect`).
+
+Model overrides per dispatch:
+
+| agent | model override |
+|---|---|
+| `pr-review-toolkit:type-design-analyzer` (inherit) | `model: "sonnet"` |
+| `pr-review-toolkit:pr-test-analyzer` (inherit) | `model: "sonnet"` |
+| `pr-review-toolkit:comment-analyzer` (inherit) | `model: "sonnet"` |
+| `superpowers:code-reviewer` (inherit) | `model: "sonnet"` |
+| `feature-dev:code-architect` (hardcoded sonnet) | none — respect upstream |
+
+If the AskUserQuestion gate above selected `phase1-only`, skip this section
+entirely (and record "Phase 2 skipped: user requested phase1-only").
+
+If scout-fallback engaged, use the rule-based fallback below.
+
+#### Phase 2 (legacy/fallback): Conditional Analysis
 
 Use the flag values parsed from the Step 0 JSON. Every skip must be recorded in the output report — **no silent skips**.
 
