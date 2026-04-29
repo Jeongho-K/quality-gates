@@ -6,10 +6,12 @@ computing state transitions, updating the state file, and injecting the next
 gate's prompt. All file I/O happens in this script (not through Claude's Write
 tool), so no permission prompts are triggered.
 
-State machine:
+State machine (forward-only):
   gate1_running → gate2_running → gate3_running → completed
-                    ↑                                  |
-                    └──── NEEDS_RESTART ───────────────┘
+
+NEEDS_RESTART from Gate 2 or Gate 3 no longer auto-restarts to Gate 1.
+Instead it terminates with a user-choice prompt (gate2_user_choice /
+gate3_fail). The within-Gate-2 fix-loop (max_gate2_iterations) is preserved.
 """
 
 import json
@@ -185,16 +187,18 @@ def extract_last_signal(transcript_path):
 def compute_transition(state, signal):
     """Compute the next state based on current state and signal.
 
-    Returns a dict describing the transition:
-      type: next_gate | retry_gate | restart | complete | abort |
-            max_total_exceeded | max_gate2_exceeded | gate3_fail
-      + relevant fields for each type
+    Pure function: no I/O, no globals.  Returns a dict with at least a
+    "type" key.  All verdict-to-transition mappings are centralised here.
+
+    Transition types:
+      next_gate | retry_gate | complete | abort | extend |
+      gate2_user_choice | max_gate2_exceeded | gate3_fail | continue
     """
     action = signal.get("action")
     gate = signal.get("gate")
     verdict = signal.get("verdict", "")
 
-    # Pipeline control signals
+    # --- Pipeline control signals (action= overrides verdict) ---
     if action == "complete":
         return {"type": "complete"}
     if action == "abort":
@@ -203,11 +207,25 @@ def compute_transition(state, signal):
         additional = int(signal.get("additional", "3"))
         return {"type": "extend", "additional": additional}
 
-    # Single-gate mode: done after one gate completes
+    # --- Cross-cutting new verdicts (handled before gate-specific logic) ---
+
+    # Trivial diff: pipeline completes immediately without dispatch
+    if verdict == "trivia-skipped":
+        return {"type": "complete", "reason": signal.get("reason", "trivia")}
+
+    # Scout agent failed; pipeline continues with rule-based gating (informational)
+    if verdict == "scout-fallback":
+        return {"type": "continue", "note": "scout-fallback"}
+
+    # Gate 2 inner loop saw two identical iterations — no progress; user choice
+    if verdict == "repeat-detected":
+        return {"type": "gate2_user_choice", "prompt_key": "gate2_repeat_detected"}
+
+    # --- Single-gate mode: done after one gate completes ---
     if state.get("single_gate"):
         return {"type": "complete"}
 
-    # Gate 1 transitions
+    # --- Gate 1 transitions ---
     if gate == "1":
         if verdict in ("PASS", "SKIP", "PASS_WITH_WARNINGS"):
             return {"type": "next_gate", "next_gate": 2, "gate2_iteration": 1}
@@ -216,18 +234,18 @@ def compute_transition(state, signal):
         # FAIL = user chose to abort
         return {"type": "abort"}
 
-    # Gate 2 transitions
+    # --- Gate 2 transitions ---
     if gate == "2":
         if verdict in ("PASS", "PASS_WITH_WARNINGS"):
             if state.get("skip_runtime"):
                 return {"type": "complete"}
             return {"type": "next_gate", "next_gate": 3}
         if verdict == "NEEDS_RESTART":
-            if state["total_iterations"] >= state["max_total_iterations"]:
-                return {"type": "max_total_exceeded"}
+            # Forward-only: no cross-gate restart to Gate 1.
+            # Present user choice: apply changes then re-run /qg.
             return {
-                "type": "restart",
-                "total_iterations": state["total_iterations"] + 1,
+                "type": "gate2_user_choice",
+                "prompt_key": "gate2_needs_restart",
             }
         if verdict == "FAIL":
             if state["gate2_iteration"] < state["max_gate2_iterations"]:
@@ -238,17 +256,13 @@ def compute_transition(state, signal):
                 }
             return {"type": "max_gate2_exceeded"}
 
-    # Gate 3 transitions
+    # --- Gate 3 transitions ---
     if gate == "3":
         if verdict in ("PASS", "SKIP"):
             return {"type": "complete"}
         if verdict == "NEEDS_RESTART":
-            if state["total_iterations"] >= state["max_total_iterations"]:
-                return {"type": "max_total_exceeded"}
-            return {
-                "type": "restart",
-                "total_iterations": state["total_iterations"] + 1,
-            }
+            # Forward-only: no auto-restart to Gate 1.
+            return {"type": "gate3_fail", "prompt_key": "gate3_runtime_fail"}
         if verdict == "FAIL":
             return {"type": "gate3_fail"}
 
@@ -292,11 +306,6 @@ def update_state_file(path, state, signal, transition):
         new_status = f"gate{retry_gate}_running"
         if retry_gate == 2:
             new_gate2_iter = transition.get("gate2_iteration", new_gate2_iter)
-    elif t_type == "restart":
-        new_gate = 1
-        new_total = transition["total_iterations"]
-        new_gate2_iter = 0
-        new_status = "gate1_running"
     elif t_type == "extend":
         new_max_total += transition.get("additional", 3)
     elif t_type in ("complete", "abort"):
@@ -335,8 +344,6 @@ def update_state_file(path, state, signal, transition):
 
     iter_label = f" iter {iteration}" if iteration else ""
     history_line = f"- [{now}] Gate {gate}{iter_label}: {verdict}"
-    if t_type == "restart":
-        history_line += f"\n- [{now}] Restarting from Gate 1 (iteration {new_total})"
 
     content = content.replace(
         "## Pipeline History\n",
@@ -427,24 +434,13 @@ def build_gate_prompt(gate_num, state, gate_results):
     return "".join(prompt_parts)
 
 
-def build_special_prompt(transition_type, state, gate_results):
-    """Build prompts for special situations (max exceeded, gate3 fail)."""
-    if transition_type == "max_total_exceeded":
-        return (
-            "MAX_TOTAL_ITERATIONS_EXCEEDED\n\n"
-            f"Quality pipeline exceeded maximum total iterations "
-            f"({state['max_total_iterations']}).\n\n"
-            "Present these options to the user:\n"
-            "1. Extend (add 3 more iterations)\n"
-            "2. Accept as-is (proceed with current state)\n"
-            "3. Abort (stop pipeline)\n\n"
-            "Based on user choice:\n"
-            '- Extend: emit <qg-signal action="extend" additional="3" />\n'
-            '- Accept: emit <qg-signal action="complete" />\n'
-            '- Abort: emit <qg-signal action="abort" reason="User chose to abort" />\n'
-            f"\nPipeline context:\n{gate_results}"
-        )
+def build_special_prompt(transition_type, state, gate_results, prompt_key=None):
+    """Build prompts for special situations (user choices, gate failures).
 
+    transition_type: the transition["type"] value.
+    prompt_key: optional sub-key for gate2_user_choice (gate2_needs_restart,
+                gate2_repeat_detected).
+    """
     if transition_type == "max_gate2_exceeded":
         return (
             "GATE2_MAX_EXCEEDED\n\n"
@@ -465,15 +461,61 @@ def build_special_prompt(transition_type, state, gate_results):
             "GATE3_FAIL\n\n"
             "Gate 3 (Runtime Verification) failed.\n\n"
             "Present options to the user:\n"
-            "1. Fix the issues (will restart from Gate 1)\n"
+            "1. Fix the issues and re-run `/qg` (pipeline does not auto-restart)\n"
             "2. Skip runtime verification and accept\n"
             "3. Abort pipeline\n\n"
             "Based on user choice:\n"
-            '- Fix: fix the issues, then emit <qg-signal gate="3" '
-            'verdict="NEEDS_RESTART" summary="Fixed runtime issues" '
-            'files_changed="list,of,files" />\n'
+            '- Fix: inform the user to apply fixes and re-run /qg. '
+            'Then emit <qg-signal action="abort" reason="User will re-run /qg after fixes" />\n'
             '- Skip: emit <qg-signal gate="3" verdict="SKIP" '
             'summary="User chose to skip runtime verification" files_changed="" />\n'
+            '- Abort: emit <qg-signal action="abort" reason="User chose to abort" />\n'
+            f"\nPipeline context:\n{gate_results}"
+        )
+
+    if transition_type == "gate2_user_choice":
+        if prompt_key == "gate2_needs_restart":
+            return (
+                "GATE2_NEEDS_RESTART\n\n"
+                "Gate 2 (PR Review) found that code-level changes are needed.\n\n"
+                "The pipeline is forward-only and cannot automatically re-enter Gate 1.\n\n"
+                "Present options to the user:\n"
+                "1. Proceed — accept the Gate 2 findings as-is and continue\n"
+                "2. Apply changes and re-run — apply the suggested changes, "
+                "then re-run `/qg` manually\n"
+                "3. Abort — stop the pipeline\n\n"
+                "Based on user choice:\n"
+                '- Proceed: emit <qg-signal gate="2" verdict="PASS_WITH_WARNINGS" '
+                'summary="Accepted Gate 2 findings as-is" files_changed="" />\n'
+                '- Apply + re-run: emit <qg-signal action="abort" '
+                'reason="User will apply changes and re-run /qg" />\n'
+                '- Abort: emit <qg-signal action="abort" reason="User chose to abort" />\n'
+                f"\nPipeline context:\n{gate_results}"
+            )
+        if prompt_key == "gate2_repeat_detected":
+            return (
+                "GATE2_REPEAT_DETECTED\n\n"
+                "Gate 2 (PR Review) is not converging — "
+                "the same findings appeared 2 iterations in a row.\n\n"
+                "Present options to the user:\n"
+                "1. Proceed — accept the current Gate 2 findings and continue\n"
+                "2. Abort — stop the pipeline\n\n"
+                "Based on user choice:\n"
+                '- Proceed: emit <qg-signal gate="2" verdict="PASS_WITH_WARNINGS" '
+                'summary="Proceeding despite repeated findings" files_changed="" />\n'
+                '- Abort: emit <qg-signal action="abort" reason="User chose to abort" />\n'
+                f"\nPipeline context:\n{gate_results}"
+            )
+        # Generic gate2_user_choice fallback
+        return (
+            "GATE2_USER_CHOICE\n\n"
+            "Gate 2 (PR Review) requires user input.\n\n"
+            "Present options to the user:\n"
+            "1. Proceed — accept findings as-is\n"
+            "2. Abort — stop the pipeline\n\n"
+            "Based on user choice:\n"
+            '- Proceed: emit <qg-signal gate="2" verdict="PASS_WITH_WARNINGS" '
+            'summary="User accepted findings" files_changed="" />\n'
             '- Abort: emit <qg-signal action="abort" reason="User chose to abort" />\n'
             f"\nPipeline context:\n{gate_results}"
         )
@@ -490,14 +532,11 @@ def build_system_message(state, transition):
 
     if t_type == "next_gate":
         gate = transition["next_gate"]
-    elif t_type == "restart":
-        gate = 1
-        total = transition["total_iterations"]
 
     gate_name = GATE_NAMES.get(str(gate), f"Gate {gate}")
 
-    if t_type in ("max_total_exceeded", "max_gate2_exceeded", "gate3_fail"):
-        return f"⚠️ Quality Gates: Action required | /cancel-qg to stop"
+    if t_type in ("max_gate2_exceeded", "gate3_fail", "gate2_user_choice"):
+        return "⚠️ Quality Gates: Action required | /cancel-qg to stop"
 
     return (
         f"🔄 Quality Gates: Gate {gate} ({gate_name}) | "
@@ -572,10 +611,13 @@ def main():
             pass
         sys.exit(0)
 
-    # 10. Handle special prompts
-    if transition["type"] in ("max_total_exceeded", "max_gate2_exceeded",
-                               "gate3_fail"):
-        prompt = build_special_prompt(transition["type"], state, gate_results)
+    # 10. Handle user-choice prompts (gate2_user_choice, max_gate2_exceeded,
+    #     gate3_fail).  These block and present options; the pipeline resumes
+    #     only after the user emits a new signal.
+    if transition["type"] in ("gate2_user_choice", "max_gate2_exceeded", "gate3_fail"):
+        prompt_key = transition.get("prompt_key")
+        prompt = build_special_prompt(transition["type"], state, gate_results,
+                                      prompt_key=prompt_key)
         sys_msg = build_system_message(state, transition)
         print(json.dumps({
             "decision": "block",
@@ -600,7 +642,19 @@ def main():
             }))
         sys.exit(0)
 
-    # 12. Build next gate prompt
+    # 12. Handle scout-fallback (continue) — informational; re-inject current gate
+    if transition["type"] == "continue":
+        current_gate = state["current_gate"]
+        prompt = build_gate_prompt(current_gate, state, gate_results)
+        sys_msg = build_system_message(state, {"type": "retry_gate"})
+        print(json.dumps({
+            "decision": "block",
+            "reason": prompt,
+            "systemMessage": sys_msg,
+        }))
+        sys.exit(0)
+
+    # 13. Build next gate prompt
     if transition["type"] == "next_gate":
         next_gate = transition["next_gate"]
         # Re-read state file to get updated gate results
@@ -610,10 +664,8 @@ def main():
             prompt = build_gate_prompt(next_gate, updated_state, updated_results)
         else:
             prompt = build_gate_prompt(next_gate, state, gate_results)
-    elif transition["type"] in ("retry_gate", "restart"):
-        retry_gate = transition.get("gate", 1)
-        if transition["type"] == "restart":
-            retry_gate = 1
+    elif transition["type"] == "retry_gate":
+        retry_gate = transition.get("gate", state["current_gate"])
         updated_state, updated_body = parse_state_file(STATE_FILE)
         if updated_state:
             updated_results = extract_gate_results(updated_body)
