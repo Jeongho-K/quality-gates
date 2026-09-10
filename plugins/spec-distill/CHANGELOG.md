@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0] — 2026-09-10
+
+### Changed
+
+- **steelman 게이트가 추천을 표시한다 — C11 재결정.** `skills/conducting-interview/references/steelman.md` Step 3 의 질문 규칙. 선택지 순서(유지 / 보완 / 전환 / 보류)는 고정 그대로이고 추천을 첫 자리로 옮기지 않는다. 추천받은 선택지 라벨 뒤에 출처를 붙인다 — builder 만, orchestrator 만, 둘 다(같은 판정)의 세 경우. 확인된 전제 충돌이 0건인데 builder 가 전환을 추천하면 그 라벨에 「전제 충돌 없음」이 함께 붙는다 — Step 2.5 의 전환 봉쇄는 추천·라벨 층에 있으므로, 게이트 선택지에 표시가 생기면 봉쇄도 거기까지 따라가야 표시가 봉쇄를 무력화하지 않는다. 표시가 가리킬 선택지가 정해지도록 4-block 의 orchestrator 줄을 자유 서술에서 「판정 — 이유」 형식으로 좁혔다. web 부재 시의 수동 의심 게이트는 builder 추천이 없어 바뀌지 않는다.
+  - **재결정 기록 (P23).** 원래 — C11(`docs/superpowers/interview/2026-09-05-steelman-goal-fit-interview.md`, 사용자 발화 S12): 선택지 순서를 고정하고 추천 라벨로 첫 자리에 올리지 않는다. 재결정 — 순서 고정은 유지하고, 추천을 게이트에 보이지 않던 부분만 뒤집어 출처별로 표시한다. 근거 — 사용자 재결정(2026-09-10). 새 외부 근거는 없다. C11 이 막던 두 위험 중 compromise effect(위치만으로 가운데 선택지가 더 자주 골라진다)는 순서 고정으로 계속 막히고, 앵커링(보이는 추천이 판단을 끈다)은 약해진다 — 그 비용을 알고 받아들인 결정이다.
+- **`tests/test_conducting_interview_stage.sh` — 표시 규칙 락.** 코퍼스는 R3 블록 전체가 아니라 steelman.md 의 질문 줄 하나다. 블록 전체로 재면 Step 2.5 의 전제-충돌 라벨이 조건을 대신 채워 질문 규칙을 지워도 통과한다. 순서 고정 · 첫 자리 승격 금지 · 출처 표시 넷의 공존과 orchestrator 줄 형식을 잰다.
+
 ## [1.0.0] — 2026-09-09
 
 major인 이유: **design doc 자리(`reviewing-spec`)의 verdict 계약이 깨진다.** `approved`/`needs_revise` 산출물은 더 이상 나오지 않는다 — 승인은 문서 리뷰 엔진(`shared/docreview/`)의 게이트 판정(`approval_gate_open`, 열린 항목이 없으면 즉시 · 상한 도달·stagnation 이면 승인 게이트 1단계 경유)을 **집계**해서 도출된다. `reviewing-spec/SKILL.md` 는 235줄(base 297줄)로 재작성된 엔진 껍데기가 됐다 — 절차 8단계의 정본은 `shared/docreview/references/reviewing-document.md` 하나이고, 이 skill 에는 이 자리의 것(입력 슬롯 · 프로필 선택 · dispatch 둘 · 원장 갱신 · 게이트 진입)만 남는다. `description` 의 "design docs reviewed by a physically-separated Law 2 reviewer" 문구는 여전히 참이다 — `doc-critic`·`doc-recritic` 도 `tools:` 에 쓰기가 없다. 바뀐 것은 리뷰어의 이름뿐이다.
