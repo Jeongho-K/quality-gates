@@ -481,23 +481,28 @@ done
 grep -qF '유지 / 보완 / 전환 / 보류' <<<"$r3_block" \
   && ok "AC6: 게이트 선택지 고정 순서 (유지 / 보완 / 전환 / 보류)" \
   || no "AC6: 게이트 선택지 고정 순서 부재"
-# 추천 표시 (C11 재결정) — 코퍼스는 r3_block 이 아니라 **질문 줄 하나**다. 블록 전체로 재면
-# Step 2.5 의 `[전제 충돌 없음]` 이 조건을 대신 채워, 질문 규칙을 지워도 통과한다.
+# 추천 표시 (C11 재결정) — 코퍼스는 질문 줄 하나다. 표시 규칙의 조건·라벨·금지가 그 한 줄에 함께
+# 있어야 하고, 추천 답안이나 Step 2.5 로 흩어지면 RED. 리터럴은 조건과 라벨을 **묶어** 잰다 — 라벨만
+# 재면 두 출처의 라벨을 맞바꾸거나 조건을 지워도 통과한다. 질문 규칙은 steelman.md 에서 **한 물리
+# 줄**이어야 한다 — 줄바꿈하면 뒷부분이 코퍼스에서 빠져 RED.
 steelman_q="$(grep -m1 '^- \*\*질문\*\*' <<<"$r3_block")"
-{ [[ -n "$steelman_q" ]] \
-    && grep -qF '유지 / 보완 / 전환 / 보류' <<<"$steelman_q" \
-    && grep -qF '첫 자리로 옮기지 않는다' <<<"$steelman_q" \
-    && grep -qF '(builder 추천)' <<<"$steelman_q" \
-    && grep -qF '(orchestrator 추천)' <<<"$steelman_q" \
-    && grep -qF '(builder·orchestrator 추천)' <<<"$steelman_q" \
-    && grep -qF '(builder 추천 · 전제 충돌 없음)' <<<"$steelman_q"; } \
-  && ok "C11 재결정: 질문 줄이 순서 고정 + 출처별 추천 표시 넷을 담는다" \
-  || no "C11 재결정: 질문 줄이 없거나 순서 고정·출처별 추천 표시(builder · orchestrator · 둘 다 · 전제 충돌 없음) 중 하나가 빠졌다"
-grep -qF '(Recommended)' <<<"$steelman_q" \
-  && no "C11 재결정: 질문 줄에 옛 (Recommended) 규칙 잔존" || ok "C11 재결정: 질문 줄에 (Recommended) 없음"
-# 표시가 가리킬 선택지가 정해지려면 orchestrator 줄이 판정 하나로 시작해야 한다.
-grep -qF '「orchestrator: <판정> — <이유>」' <<<"$r3_block" \
-  && ok "C11 재결정: orchestrator 줄이 판정으로 시작" || no "C11 재결정: orchestrator 줄 형식 「orchestrator: <판정> — <이유>」 부재"
+for lit in \
+  '**고정 순서** 유지 / 보완 / 전환 / 보류 — 추천을 첫 자리로 옮기지 않는다' \
+  'builder 가 추천한 선택지 라벨 뒤에 `(builder 추천)`' \
+  'orchestrator 판정 선택지 라벨 뒤에 `(orchestrator 추천)`' \
+  '같은 선택지면 `(builder·orchestrator 추천)` 하나만' \
+  'builder 추천이 switched 이고 Step 2.5 가 `재검토 사유 없음` 이면 전환 라벨은 `(builder 추천 · 전제 충돌 없음)`' \
+  '`(Recommended)`·`(권장)` 접미사는 붙이지 않는다'; do
+  grep -qF "$lit" <<<"$steelman_q" && ok "C11 재결정 질문 줄: $lit" \
+    || no "C11 재결정 질문 줄에 없음 (질문 줄이 한 물리 줄인지도 보라): $lit"
+done
+# 표시가 가리킬 선택지가 정해지려면 orchestrator 줄이 판정 하나로 시작해야 하고, 보류는 그 판정에
+# 들지 않는다(C15). 충돌 0건의 유지·보완 제한은 전환 라벨의 봉쇄가 기대는 전제라 함께 잰다.
+for lit in \
+  '「orchestrator: <판정> — <이유>」(판정은 유지 / 보완 / 전환 중 하나 — 보류는 사람만 고른다)' \
+  'orchestrator 줄은 유지 또는 보완 중 하나'; do
+  grep -qF "$lit" <<<"$r3_block" && ok "C11 재결정 R3 블록: $lit" || no "C11 재결정 R3 블록에 없음: $lit"
+done
 grep -qE 'defended|방어' <<<"$r3_block" && no "AC6: 옛 어휘 defended/방어 잔존" || ok "AC6: 옛 어휘 부재"
 # 5의례 표(`| R3 |` 행)는 r3_block 밖이다 — 그 블록은 이제 steelman.md 에서 뜨고, 표는 SKILL.md
 # 의 다른 절에 산다. 그래서 위 어휘 락이 닿지 않고, 그 자리가 조용히 옛 2값(`방어 또는 전환`)으로
