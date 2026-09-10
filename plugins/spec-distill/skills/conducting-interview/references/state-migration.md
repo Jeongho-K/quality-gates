@@ -21,7 +21,11 @@ state.local.md 로드 시 아래 중 **하나라도** 부재면 *non-mutating re
 구세션(`interview_round` 존재 / `coverage` 통째 부재)은 위 규칙의 한 경우일 뿐이다 — 그때는
 모든 키가 부재라 전부 seed 된다.
 
-기존 필드(`non_user_streak`·`web_*`·`issue_history` 등)는 유지. **구세션에 한해**(위 정의 —
+기존 필드(`non_user_streak`·`web_*`·`trivia_escape_armed` 등)는 유지.
+**단 `rereview_count`·`issue_history` 두 키는 승계하지 않고 지운다** — 옛 design doc 리뷰
+파이프라인이 쓰던 것이고, 그 자리가 공유 문서 리뷰 엔진으로 넘어가면서 산출자도 소비자도
+없어졌다(재리뷰 카운터의 정본은 이제 엔진의 `docreview-state.md` 다). 남겨두면 아무도
+갱신하지 않는 `0`·`[]` 가 스키마에 계속 실려 다음 사람이 실재하는 상태로 읽는다. **구세션에 한해**(위 정의 —
 `coverage` 통째 부재) 라운드별 잠금 레코드 리스트(v0.22.0까지의 잠금 필드)는 승계하지 않고
 `user_statements: []`로 fresh seed합니다 — 잠금 레코드를 발화 레코드로 승격하면 판정이 없던 척하는
 잠금이 그대로 넘어옵니다. **직전 릴리스 세션의 `user_statements` 는 절대 비우지 않습니다** —

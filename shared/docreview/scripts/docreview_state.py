@@ -13,6 +13,7 @@ frontmatter 의 `docreview:` 트리가 원장, 본문은 사람이 읽는 사건
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import re
 import sys
@@ -272,19 +273,99 @@ PUBLIC_FIELDS = ("id", "lineage", "bucket", "supersedes", "origin", "layer", "ca
                  "state", "promotion", "promoted_from", "immutable", "kind")
 
 
+GateRow = collections.namedtuple("GateRow", "name ledger pred open blocks render")
+
+# ── 상태 축의 정본 ──────────────────────────────────────────────────────────
+# 한 항목이 「열려 있는가(계보·stagnation) · 승인을 막는가 · 게이트에 보이는가」는
+# 이 표 하나가 정한다. 설계 §6.4 「공통 뿌리 — 상태 축의 열거」: 같은 사실을 세 곳이
+# 각자 열거하면 그 열거들이 어긋나고 어긋난 자리가 곧 fail-open 이다. 상태를 늘리는
+# 사람은 이 표에 행을 더하고, 차단 행이면 렌더러 이름을 반드시 채운다 —
+# test_docreview_gate_visibility.sh 가 「차단 집합 ⊆ 가시성 집합」을 별도 단언으로
+# 재므로(Ruling 26/29 — C1 재발 방지: 가시성 코퍼스 등식 하나만으로는 이 포함관계를
+# 안 잰다, 실측으로 걸렸다) 렌더러 없는 차단 행은 그 락에서 즉시 RED 다. 표 자체의
+# 다섯 열(name·ledger·open·blocks·render) 이 흔들리는 것은 같은 락의 리터럴 증인
+# 표(Ruling 29)가 잡는다.
+#
+# `render` 가 None 인 행은 «보이지 않아도 되는» 행이다. 오늘 그런 행은 없다 —
+# 비차단 행도 승인 게이트가 한 번은 보여준다(설계 §8.2). None 을 남겨 두는 것은
+# 미래에 정말로 안 보여도 되는 상태가 생겼을 때의 자리다.
+GATE_ROWS = (
+    GateRow("open_decide", "decides", lambda r: r["state"] == "open", True, True, "decide"),
+    GateRow("adopted", "decides", lambda r: r["state"] == "adopted", True, True, "adopted"),
+    GateRow("blocked_expired", "decides",
+            lambda r: r["state"] == "expired" and not r.get("superseded_by"), True, True, "expired"),
+    GateRow("superseded_expired", "decides",
+            lambda r: r["state"] == "expired" and bool(r.get("superseded_by")), True, False, "superseded"),
+    GateRow("held_decide", "decides", lambda r: r["state"] == "held", False, False, "held_decide"),
+    GateRow("unapplied_fix", "fixes",
+            lambda r: r["state"] in ("pending", "intent_passed"), True, True, "unapplied_fix"),
+    GateRow("escalated_fix", "fixes", lambda r: r["state"] == "escalated", True, True, "escalated_fix"),
+    GateRow("held_fix", "fixes", lambda r: r["state"] == "held", True, False, "held_fix"),
+    GateRow("blocking_ask_open", "asks",
+            lambda r: not r.get("answered") and bool(r.get("blocks")), True, False, "blocking_ask"),
+    GateRow("ask_open", "asks",
+            lambda r: not r.get("answered") and not r.get("blocks") and not r.get("from_decide"),
+            False, False, "ask_open"),
+)
+
+
+def gate_bucket(st, row) -> list:
+    return sorted(i for i, r in st[row.ledger].items() if row.pred(r))
+
+
 def is_open(st, fid) -> bool:
-    f = st["findings"].get(fid)
-    if not f:
+    if fid not in st["findings"]:
         return False
-    d = f.get("disposition")
-    if d == "decide":
-        return st["decides"].get(fid, {}).get("state") in ("open", "adopted", "expired")
-    if d == "fix":
-        return st["fixes"].get(fid, {}).get("state") in ("pending", "intent_passed", "held", "escalated")
-    if d == "ask":
-        a = st["asks"].get(fid, {})
-        return (not a.get("answered")) and bool(a.get("blocks"))
+    for row in GATE_ROWS:
+        if not row.open:
+            continue
+        r = st[row.ledger].get(fid)
+        if r is not None and row.pred(r):
+            return True
     return False
+
+
+def _is_reraise_successor(st, fid) -> bool:
+    """이 id 를 `superseded_by` 로 가리키는 만료 항목이 있는가 — 즉 승계된 의무를 지는가."""
+    return any(d.get("superseded_by") == fid for d in st["decides"].values())
+
+
+# ── 선택지 축의 정본 (설계 §6.4 알려진 한계 (a)) ───────────────────────────────
+# 상태 축(GATE_ROWS)이 「열려 있는가·막는가·보이는가」를 한 표로 모으듯, 이 함수쌍은
+# 「이 decide 에 실제로 받아들여지는 재결정이 무엇인가」를 한 곳으로 모은다. 순수
+# 부분(`_decide_choices_for`)과 원장을 읽는 래퍼(`decide_choices`)로 가른다 —
+# [Task 4 fix round 1 — 리뷰 I1 정정] 원안은 래퍼 하나뿐이었고 `docreview_route.py`
+# 의 `_decision_view` 는 "원장에 이 id 가 아직 없다"는 이유로 아예 안 썼다. 그런데
+# 그 함수가 정말 못 보는 것은 **이 id 자신의 원장 레코드**뿐이다 — 승계 여부
+# (`_is_reraise_successor`)는 전방 포인터가 **바로 그 직전 줄**(`_resolve_ids_and_
+# lineage`)에서 이미 대상 레코드(원본, 이 id 가 아니다)에 찍히므로 라우팅 시점에도
+# 계산 가능하고, 상태는 `record_findings` 가 몇 줄 뒤 무조건 "open" 으로 적을 값이라
+# 호출부가 이미 알고 있다. 순수 부분을 갈라내면 `_decision_view` 는 원장을 몰라도
+# `_decide_choices_for("open", _is_reraise_successor(st, it["id"]))` 로 같은 답을
+# 낼 수 있다 — 선택지 로직은 여전히 한 곳(이 함수)뿐이고, `decide_choices`(원장
+# 래퍼)는 원장에 없는 id 를 «open 인 셈 치는» 승격을 하지 않는다(그 승격은 나중에
+# 진짜 모르는 상태를 감추는 쪽으로 작동한다 — 실패는 닫힌 채로 둔다).
+def _decide_choices_for(state, is_successor) -> list:
+    """선택지 계산의 순수 부분 — 원장 조회 없이 상태·승계 여부만 본다."""
+    if state not in ("open", "expired"):
+        return []
+    if state == "expired" or is_successor:
+        return ["adopt", "reject"]          # 보류 없음 — 의무를 넘길 자리가 없다
+    return ["adopt", "reject", "hold"]
+
+
+def decide_choices(st, fid) -> list:
+    """이 항목에 «실제로 받아들여지는» 재결정 선택지 목록 — 원장에서 상태를 읽는 래퍼.
+    `cmd_decide` 의 거부 술어와 `_rg_decide`(render_gate 의 「대안:」 줄)·`_rg_expired`
+    가 이 래퍼를 쓴다. 원장에 id 가 아직 없으면(예: 이 라운드에 막 채번됐지만 아직
+    `record_findings` 전인 id) 상태를 모른다 — `open` 으로 승격하지 않고 빈 리스트를
+    낸다(fail-closed). 원장에 있다는 사실 없이 상태를 안다고 «주장»할 수 있는 유일한
+    호출부는 `_decision_view` 하나뿐이고, 그 자리는 이 래퍼가 아니라 `_decide_choices_for`
+    를 직접 쓴다(위 헤더 참조)."""
+    d = st["decides"].get(fid)
+    if d is None:
+        return []
+    return _decide_choices_for(d.get("state"), _is_reraise_successor(st, fid))
 
 
 def _refresh_open_lineages(st, n) -> None:
@@ -387,18 +468,24 @@ def cmd_decide(a) -> int:
     d = st["decides"].get(a.id)
     if not d:
         return fail("unknown_decide", id=a.id)
-    # 만료(expired)만 재결정을 받는다(설계 §6.4 탈출구) — 후속이 끝내 안 생기는 입력에
-    # 사용자의 길이 없으면 영구 차단이다. rejected · held · applied 는 이미 누군가 의무를
-    # 졌거나 소멸한 것이라 다시 열지 않는다. adopted 도 거부한다 — 그 라운드에 이미 연
-    # permit 이 아직 관측을 기다리는 중이라, 다음 라운드가 스스로 applied 나 expired 로
-    # 답한다(재결정할 대상이 아니라 결과를 기다리는 중인 것뿐이다).
-    if d["state"] not in ("open", "expired"):
+    # 수용 술어는 `decide_choices` 하나로 모은다(설계 §6.4 한계 (a)). rejected · held ·
+    # applied 는 이미 누군가 의무를 졌거나 소멸한 것이라 다시 열지 않는다. adopted 도
+    # 거부한다 — 그 라운드에 이미 연 permit 이 아직 관측을 기다리는 중이라, 다음
+    # 라운드가 스스로 applied 나 expired 로 답한다(재결정할 대상이 아니라 결과를
+    # 기다리는 중인 것뿐이다). open·expired 만 재결정을 받되(설계 §6.4 탈출구 — 후속이
+    # 끝내 안 생기는 입력에 사용자의 길이 없으면 영구 차단이다), expired 와 재상승
+    # 후속(승계된 의무를 진 open)은 「보류」가 빠진다 — 「보류」는 항목을 held 로 내려
+    # 어떤 차단 목록에도 안 들게 만들어 «한 번의 보류로 승인이 열린다», expired 에선
+    # 탈출구가 아니라 구멍이고 재상승 후속에선 그 구멍이 원본의 차단을 한 홉 건너에서
+    # 푼다(§6.4 한계 (a) 그 자체 — 「만료라서 못 한다」와 「승계 의무를 지고 있어서 못
+    # 한다」는 다른 사실이라 사유 리터럴도 갈린다).
+    allowed = decide_choices(st, a.id)
+    if not allowed:
         return fail("decide_not_open", id=a.id, state=d["state"])
-    # 만료의 선택지는 「채택」과 「기각」 둘뿐이다. 「보류」는 항목을 held 로 내려
-    # 열린 decide 에도 차단 만료에도 안 들게 만들어 «한 번의 보류로 승인이 열린다» —
-    # 탈출구가 아니라 구멍이다.
-    if d["state"] == "expired" and a.choice == "hold":
-        return fail("decide_hold_not_allowed_for_expired", id=a.id)
+    if a.choice not in allowed:
+        if d["state"] == "expired":
+            return fail("decide_hold_not_allowed_for_expired", id=a.id)
+        return fail("decide_hold_not_allowed_for_reraise_successor", id=a.id)
     n = int(st["round"])
     f = st["findings"][a.id]
     entry = {"decision_id": "D%d.%d" % (n, len(st["decision_log"]) + 1), "round": n,
@@ -488,7 +575,12 @@ def cmd_fix(a) -> int:
             fx["state"] = "pending"
     elif ev == "escalate":
         fx["state"] = "escalated"
-        st["escalated"].append({"finding_id": a.id, "reason": a.reason or "check-intent 거부", "round": n})
+        reason = a.reason or "check-intent 거부"
+        # [Fix round 1 — M7/Ruling 30] 원장(`st["escalated"]`)이 아니라 fix 레코드
+        # 자신에도 사유를 남긴다 — 원장은 소비되면 비므로(Task 2) 렌더가 나중 라운드에
+        # 읽을 자리가 없어진다(`_rg_escalated_fix` 참조).
+        fx["escalate_reason"] = reason
+        st["escalated"].append({"finding_id": a.id, "reason": reason, "round": n})
     else:
         return fail("unknown_event", event=ev)
     _refresh_open_lineages(st, n)
@@ -603,7 +695,6 @@ def cmd_observe_diff(a) -> int:
 def gate_summary(st) -> dict:
     n = int(st["round"])
     rr = int(st["rereview_count"])
-    dec = st["decides"]
     fx = st["fixes"]
     asks = st["asks"]
     # 만료가 승인을 막는지는 «전방» 포인터 하나가 정한다(설계 §6.4). 역방향으로 세면
@@ -611,26 +702,18 @@ def gate_summary(st) -> dict:
     # defer · 재비판 reject — 이 하나만 와도 차단이 풀린다. 라우터의 자동 계보 연결이
     # 지목 없는 finding 에도 supersedes 를 붙이기 때문이다. superseded_by 를 쓰는 곳은
     # 재상승 루프 하나뿐이라 그 기록은 의무의 증거다. 기록이 없으면 막는다 — fail-closed.
-    g = {
-        "round": n, "rereview_count": rr, "cap_reached": rr >= REREVIEW_CAP,
-        "open_decide": sorted(i for i, d in dec.items() if d["state"] == "open"),
-        "adopted": sorted(i for i, d in dec.items() if d["state"] == "adopted"),
-        "blocked_expired": sorted(i for i, d in dec.items()
-                                  if d["state"] == "expired" and not d.get("superseded_by")),
-        "unapplied_fix": sorted(i for i, f in fx.items() if f["state"] in ("pending", "intent_passed")),
-        "held_fix": sorted(i for i, f in fx.items() if f["state"] == "held"),
-        "asks_open": sorted(i for i, x in asks.items() if not x.get("answered")),
-        "blocking_ask_open": sorted(i for i, x in asks.items() if not x.get("answered") and x.get("blocks")),
-        "defers": sorted(i for i, f in st["findings"].items() if f.get("disposition") == "defer"),
-        "dropped": sorted(i for i, f in fx.items() if f["state"] == "dropped"),
-        "extra_rounds": st["extra_rounds"],
-    }
+    g = {"round": n, "rereview_count": rr, "cap_reached": rr >= REREVIEW_CAP}
+    for row in GATE_ROWS:
+        g[row.name] = gate_bucket(st, row)
+    g["asks_open"] = sorted(i for i, x in asks.items() if not x.get("answered"))
+    g["defers"] = sorted(i for i, f in st["findings"].items() if f.get("disposition") == "defer")
+    g["dropped"] = sorted(i for i, f in fx.items() if f["state"] == "dropped")
+    g["extra_rounds"] = st["extra_rounds"]
     cur = st["rounds"].get(str(n), {})
     prev = st["rounds"].get(str(n - 1), {})
     g["stagnation"] = bool(n >= 2 and cur.get("open_lineages") and
                            cur.get("open_lineages") == prev.get("open_lineages") and int(cur.get("progress", 0)) == 0)
-    g["approval_ready"] = (not g["open_decide"] and not g["adopted"]
-                           and not g["blocked_expired"] and not g["unapplied_fix"])
+    g["approval_ready"] = not any(g[row.name] for row in GATE_ROWS if row.blocks)
     g["round_gate_needed"] = bool(g["open_decide"] or g["blocking_ask_open"])
     g["approval_gate_open"] = g["approval_ready"] or g["cap_reached"] or g["stagnation"]
     g["two_stage"] = g["approval_gate_open"] and not g["approval_ready"]
@@ -639,9 +722,122 @@ def gate_summary(st) -> dict:
     g["degrade"] = rep.get("degrade") or {}
     g["advisory"] = rep.get("advisory") or []
     g["counts"] = {k: rep.get(k, 0) for k in ("rejected", "bucket_conflicts", "lineage_mismatch",
-                                              "revived", "reraise_unconsumed")}
+                                              "revived", "reraise_unconsumed", "escalated_unconsumed")}
     g["counts"]["user_rejected"] = sum(1 for v in st["rejected_lineages"].values() if v.get("by") == "user")
     return g
+
+
+_CHOICE_LABEL = {"adopt": "채택(적용)", "reject": "기각(원복)", "hold": "보류"}
+
+
+def _post_kind_notice(d) -> str:
+    """사후(`post`) 결정에만 붙는 고지 꼬리 — 「채택」이 원복 의무를 관측 없이
+    종결한다는 뜻이 성립하는 «모든» 렌더러가 같은 문장을 낸다(설계 §6.4 — 규범
+    문장은 렌더러가 아니라 그 뜻이 성립하는가에 묶인다). 리터럴은 여기 한 곳뿐 —
+    `_rg_decide`·`_rg_expired` 둘 다 이 함수를 부른다. [fix round 1 — 리뷰 I1] 전엔
+    `_rg_expired` 안에 인라인으로만 있어, 재상승 후속이 (이 태스크 이후) `post` 를
+    물려받아도 그 후속이 아직 열린 decide 인 동안(`_rg_decide` 로 렌더되는 동안)은
+    이 뜻이 사용자에게 안 닿았다 — §6.4 한계 (b) 의 절반이 렌더 축에서 그대로
+    열려 있던 자리."""
+    return " — 「채택」은 원복 의무를 관측 없이 종결한다" if d.get("kind") == "post" else ""
+
+
+def _rg_decide(st, g, fid):
+    # [Task 4 — §6.4 한계 (a)] 「대안:」 줄은 `dv.get("alternatives")`(docreview_route.py
+    # `_decision_view` 의 상수 목록)가 아니라 `decide_choices` 로 낸다 — 그쪽은 라우팅
+    # 시점(record_findings 이전)에 불려 이 id 를 못 보므로 여기가 «제안 = 수용» 이
+    # 실제로 성립하는 유일한 자리다(위 `decide_choices` 헤더 코멘트). `dv` 는 변경·근거·
+    # 영향 세 필드에는 여전히 쓴다 — 그 셋은 항목별 서술이라 선택지 축과 무관하다.
+    f = st["findings"][fid]
+    dv = f.get("decision_view") or {}
+    alternatives = [_CHOICE_LABEL[c] for c in decide_choices(st, fid)]
+    d = st["decides"].get(fid) or {}
+    return ["[decide%s] %s — %s%s" % (" auto" if dv.get("auto") else "", fid, f.get("summary"), _post_kind_notice(d)),
+            "  변경: %s" % dv.get("change", f.get("summary")),
+            "  근거: %s" % dv.get("basis", f.get("evidence") or "—"),
+            "  대안: %s" % " / ".join(alternatives),
+            "  영향: %s" % dv.get("impact", f.get("anchor"))]
+
+
+def _rg_adopted(st, g, fid):
+    return ["[채택·미관측] %s — %s (다음 라운드 diff 가 적용을 관측해야 닫힌다)"
+            % (fid, st["findings"][fid].get("summary"))]
+
+
+def _rg_expired(st, g, fid):
+    # [Task 4 fix round 1 — 리뷰 I4 정정] 예전엔 여기 "(채택 / 기각%s)" 를 직접
+    # 하드코딩했다 — `_rg_decide` 를 고치면서 남긴 **두 번째, 안 이어진 열거**였다.
+    # `decide_choices` 가 expired 에 항상 내는 값과 우연히 일치했을 뿐 그 함수를
+    # 쓰지 않았으므로, 둘이 갈려도(예: `decide_choices` 가 언젠가 expired 에 대안
+    # 선택지를 더 낸다면) 이 줄은 조용히 낡은 채로 남았을 것이다 — 이 태스크가
+    # 닫으려던 「제안 ≠ 수용」이 형제 렌더러에 그대로 있었다. `decide_choices` 로
+    # 통일한다(M3 부산물 — `_rg_decide` 와 라벨 어휘도 이제 같다).
+    d = st["decides"].get(fid) or {}
+    alt = " / ".join(_CHOICE_LABEL[c] for c in decide_choices(st, fid))
+    return ["[만료·차단] %s — %s (%s%s)" % (fid, st["findings"][fid].get("summary"), alt, _post_kind_notice(d))]
+
+
+def _rg_superseded(st, g, fid):
+    d = st["decides"].get(fid) or {}
+    return ["[만료·승계됨] %s → %s" % (fid, d.get("superseded_by"))]
+
+
+def _rg_held_decide(st, g, fid):
+    # [Fix round 1 — I3/Ruling 28] 원래 문구("승인 게이트에서 답하거나 기각한다")는
+    # 실측으로 둘 다 거짓이었다 — `ask --answered` 는 이 항목을 안 닫고(hold 가 심은
+    # ask 는 blocks 가 비어 있어 `cmd_ask` 의 unhold 루프가 아무 fix 도 안 건드리고,
+    # decides 레코드는 여전히 state=="held" 로 남는다) `decide --choice reject` 는
+    # `decide_not_open`(§`cmd_decide`, held 는 재결정 대상이 아니다)으로 거부된다.
+    # §8.1 은 「보류」를 decide 를 ask 로 내리는 **사용자 자신의 선택**으로 규정하고
+    # §8.2 는 그것을 승인 게이트의 「남은 ask 목록」에서 보여준다고만 한다 — 되돌리는
+    # 절차는 설계에 없다. 그래서 사실만 적는다: 존재는 렌더되고 승인은 막지 않는다.
+    # 새 전이를 만들지 않는다(룰링 28 — `decide --choice reject` 를 held 에 허용하는
+    # 것은 spec 근거 없는 행동 변경이다).
+    return ["[decide 보류] %s — %s (사용자가 보류했다 — 승인을 막지 않고, 승인 게이트의 남은 ask 목록에 보인다, §8.2)"
+            % (fid, st["findings"][fid].get("summary"))]
+
+
+def _rg_unapplied_fix(st, g, fid):
+    return ["[미적용 fix] %s — %s (적용 예정 / drop)" % (fid, st["findings"][fid].get("summary"))]
+
+
+def _rg_escalated_fix(st, g, fid):
+    # [Fix round 1 — I2/M7/Ruling 27·30] `st["escalated"]` 는 소비되면 빈다(Task 2,
+    # round>=n 수명) — 그 리스트를 스캔해 사유를 얻던 원래 코드는 소비 뒤 하드코딩
+    # 기본값("check-intent 거부")으로 조용히 대체되어, `anchor_protected` 같은 진짜
+    # 사유가 둘째 라운드부터 거짓 일반화됐다(M7 실측). 사유는 escalate 시점에
+    # `cmd_fix`/`docreview_anchor.escalate()` 가 fix 레코드 자신에 `escalate_reason`
+    # 으로 함께 남긴다(아래 두 자리) — 원장이 아니라 레코드에 있으므로 예약 소비와
+    # 무관하게 남는다. 값이 없으면(도달 불가하지만) 있는 척 지어내지 않고 「사유
+    # 불명」이라 말한다(룰링 30 — 그럴듯한 기본값을 지어내는 것은 모른다고 인정하는
+    # 것보다 나쁘다). `escalated` 는 그대로 차단·가시 유지(룰링 27 — §6.4 한계 (c) 는
+    # 비차단·비가시 둘 다를 결함으로 지목했다, 비차단으로 만드는 것은 수선이 아니다) —
+    # 다만 `cmd_fix --event drop` 이 상태 가드 없이 이미 이 상태에서 동작하므로(AC23
+    # 이 연 탈출구, 새 전이 아님) 렌더가 그 사실을 `_rg_unapplied_fix` 처럼 알려준다.
+    fx = st["fixes"].get(fid) or {}
+    why = fx.get("escalate_reason") or "사유 불명"
+    return ["[fix 상향 대기] %s — %s (사유: %s, drop 하면 이 차단이 풀린다)"
+            % (fid, st["findings"][fid].get("summary"), why)]
+
+
+def _rg_held_fix(st, g, fid):
+    return ["[fix 보류] %s — 전제 ask 미응답" % fid]
+
+
+def _rg_blocking_ask(st, g, fid):
+    f = st["findings"][fid]
+    return ["[ask 비차단] %s — %s → 전제인 fix: %s"
+            % (fid, f.get("summary"), ", ".join(f.get("blocks") or []))]
+
+
+def _rg_ask_open(st, g, fid):
+    return ["[ask] %s — %s" % (fid, st["findings"][fid].get("summary"))]
+
+
+GATE_RENDERERS = {"decide": _rg_decide, "adopted": _rg_adopted, "expired": _rg_expired,
+                  "superseded": _rg_superseded, "held_decide": _rg_held_decide,
+                  "unapplied_fix": _rg_unapplied_fix, "escalated_fix": _rg_escalated_fix,
+                  "held_fix": _rg_held_fix, "blocking_ask": _rg_blocking_ask, "ask_open": _rg_ask_open}
 
 
 def render_gate(st, g) -> str:
@@ -656,31 +852,16 @@ def render_gate(st, g) -> str:
     out.append("라운드 %d · 재리뷰 %d/%d%s%s" % (g["round"], g["rereview_count"], REREVIEW_CAP,
                                               " · 상한 도달" if g["cap_reached"] else "",
                                               " · stagnation" if g["stagnation"] else ""))
-    F = st["findings"]
-    for fid in g["open_decide"]:
-        f = F[fid]
-        dv = f.get("decision_view") or {}
-        out.append("[decide%s] %s — %s" % (" auto" if dv.get("auto") else "", fid, f.get("summary")))
-        out.append("  변경: %s" % dv.get("change", f.get("summary")))
-        out.append("  근거: %s" % dv.get("basis", f.get("evidence") or "—"))
-        out.append("  대안: %s" % " / ".join(dv.get("alternatives") or ["채택", "기각", "보류"]))
-        out.append("  영향: %s" % dv.get("impact", f.get("anchor")))
-    for fid in g["blocked_expired"]:
-        f = F[fid]
-        d = st["decides"].get(fid) or {}
-        tail = " — 「채택」은 원복 의무를 관측 없이 종결한다" if d.get("kind") == "post" else ""
-        out.append("[만료·차단] %s — %s (채택 / 기각%s)" % (fid, f.get("summary"), tail))
-    for fid in g["blocking_ask_open"]:
-        f = F[fid]
-        out.append("[ask 비차단] %s — %s → 전제인 fix: %s" % (fid, f.get("summary"), ", ".join(f.get("blocks") or [])))
-    if g["held_fix"]:
-        out.append("보류된 fix(전제 ask 미응답): " + ", ".join(g["held_fix"]))
-    if g["approval_gate_open"] and g["unapplied_fix"]:
-        out.append("미적용 fix(적용 예정 / drop): " + ", ".join(g["unapplied_fix"]))
+    for row in GATE_ROWS:
+        fn = GATE_RENDERERS.get(row.render) if row.render else None
+        if fn is None:
+            continue
+        for fid in g[row.name]:
+            out.extend(fn(st, g, fid))
     c = g["counts"]
-    out.append("기각 %d건(재비판) · 사용자 기각 %d · drop %d · bucket 충돌 %d · 계보 지목 불일치 %d · 기각 계보 재상승 %d · 미소비 재상승 예약 %d"
+    out.append("기각 %d건(재비판) · 사용자 기각 %d · drop %d · bucket 충돌 %d · 계보 지목 불일치 %d · 기각 계보 재상승 %d · 미소비 재상승 예약 %d · 미소비 상향 예약 %d"
                % (c["rejected"], c["user_rejected"], len(g["dropped"]), c["bucket_conflicts"],
-                  c["lineage_mismatch"], c["revived"], c["reraise_unconsumed"]))
+                  c["lineage_mismatch"], c["revived"], c["reraise_unconsumed"], c["escalated_unconsumed"]))
     if g["approval_ready"]:
         out.append("다음: 승인 게이트 — 진행 옵션 활성")
     elif g["two_stage"]:
@@ -697,6 +878,13 @@ def cmd_gate(a) -> int:
         print(render_gate(st, g))
     else:
         print(json.dumps(g, ensure_ascii=False))
+    return 0
+
+
+def cmd_gate_rows(a) -> int:
+    print(json.dumps([{"name": r.name, "ledger": r.ledger, "open": r.open,
+                       "blocks": r.blocks, "render": r.render} for r in GATE_ROWS],
+                     ensure_ascii=False))
     return 0
 
 
@@ -730,6 +918,7 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--log-file", required=True); x.set_defaults(fn=cmd_defer)
     x = sd(sp.add_parser("observe-diff")); x.add_argument("--diff", required=True); x.set_defaults(fn=cmd_observe_diff)
     x = sd(sp.add_parser("gate")); x.add_argument("--render", action="store_true"); x.set_defaults(fn=cmd_gate)
+    x = sp.add_parser("gate-rows"); x.set_defaults(fn=cmd_gate_rows)
     return p
 
 

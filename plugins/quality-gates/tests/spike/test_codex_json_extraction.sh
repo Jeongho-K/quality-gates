@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Spike: verify codex emits fenced JSON >=2/3 times.
 #
+# ★ 회귀 스위트에서 돌리지 마라 — 리포 전체 스윕이 `/spike/` 를 제외하는 이유가 이
+#   파일이다. 이것은 실제 codex 를 호출하고(지출) 그 출력으로 **추적되는** 골든
+#   `spike/fixtures/codex_jsonl_sample.json` 을 덮어쓴다. 그 픽스처를 읽는 형제 락
+#   (`test_artifact_codex_reviewer.sh` · `test_findings_parser.sh`)이 그 자리에서 깨지고,
+#   워킹 트리는 dirty 가 된다(복원은 `git checkout --`). 스윕: `find … -name 'test_*.sh'
+#   | grep -v '/spike/'`.
+#
 # 결과는 **세 값**이다 — PASS / FAIL / SKIPPED.
 #
 #   PASS     3회 중 2회 이상이 fenced JSON 을 냈다. fixture 를 굽고 exit 0.

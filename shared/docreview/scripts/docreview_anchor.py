@@ -276,7 +276,13 @@ def cmd_check_intent(a) -> int:
 
     def escalate(reason):
         fx["state"] = "escalated"
-        st["escalated"].append({"finding_id": a.finding_id, "reason": "check-intent 거부: " + reason, "round": n})
+        full_reason = "check-intent 거부: " + reason
+        # [Fix round 1 — M7/Ruling 30] docreview_state.cmd_fix 의 escalate 와 같은
+        # 이유로 fix 레코드 자신에도 사유를 남긴다 — `st["escalated"]` 는 소비되면
+        # 비고, 이 경로(check-intent 실제 거부)가 anchor_protected 등 진짜 사유의
+        # 유일한 생산자다.
+        fx["escalate_reason"] = full_reason
+        st["escalated"].append({"finding_id": a.finding_id, "reason": full_reason, "round": n})
         save_state(a.state_dir, st, "check-intent reject %s (%s)" % (a.finding_id, reason))
         return _reject(reason)
 

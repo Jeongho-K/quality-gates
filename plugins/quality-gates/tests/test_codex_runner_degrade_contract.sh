@@ -10,8 +10,8 @@
 # 으로 읽힌다 — 리뷰어 하나가 조용히 사라진다(2026-08-04 /qg 라운드 1 적발).
 #
 # ★ 러너 목록은 **도출**한다(태스크 20, AC23) — 아래 "0 — 러너 도출" 참고.
-#   하드코딩된 run_codex_reviewer.sh 하나로는 형제 러너(run_artifact_/run_spec_/
-#   run_brief_/run_audit_codex_reviewer.sh)에 같은 degrade 계약이 있는지 아무것도
+#   하드코딩된 run_codex_reviewer.sh 하나로는 형제 러너(run_artifact_/run_brief_/
+#   run_audit_/run_docreview_codex_reviewer.sh)에 같은 degrade 계약이 있는지 아무것도
 #   재지 못했다 — 실제로 이 계약은 러너마다 따로 백포트됐고, 백포트를 잊은
 #   러너가 조용히 남을 수 있다.
 #
@@ -109,8 +109,9 @@ else
 fi
 
 # ── 5/6: 완료 전 중단 — stale 재사용 봉쇄 ────────────────────────────────────
-# 쌍둥이 `run_spec_codex_reviewer.sh`가 spec-distill 0.24.14에서 받은 봉쇄가 이
-# 러너에는 백포트되지 않아, SIGTERM/`set -u` abort/OOM/Bash-tool timeout 어느
+# 쌍둥이였던 spec-distill 의 design-doc 러너(0.24.14 에서 이 봉쇄를 받았고, 문서
+# 리뷰 엔진으로 흡수되며 삭제됐다)의 봉쇄가 이 러너에는 백포트되지 않아,
+# SIGTERM/`set -u` abort/OOM/Bash-tool timeout 어느
 # 경로로 죽어도 **이전 iteration의 YAML이 그대로 남았다**. 오케스트레이터는 그것을
 # 이번 라운드의 codex 판정으로 읽는다 — stale이 clean이면 진짜 결함이 clean 인증을
 # 받고, 발견을 담고 있으면 이미 고친 결함을 다시 쫓는다 (2026-08-05 /qg 라운드 2).
@@ -172,19 +173,27 @@ else
   printf '%s\n' "$runners" | sed 's/^/      /'
 fi
 
-# ══ 계약 핵심 3개 — 5 러너 전부 (태스크 20b) ═══════════════════════════════
+# ══ 계약 핵심 3개 — 러너 다섯 (태스크 20b) ═════════════════════════════════
 # 위 1~7번은 run_codex_reviewer.sh 하나만 깊게 잰다. 여기서는 같은 3개 핵심
-# 성질(0바이트 아님 · codex_failed:true · stale 미재사용)을 도출된 5개 러너
-# 전부에 반복한다. 러너마다 두 시나리오로 잰다:
+# 성질(0바이트 아님 · codex_failed:true · stale 미재사용)을 러너 **다섯**에
+# 반복한다.
+#
+# **「전부」가 아니다** — 위 「0 — 러너 도출」이 세는 도출 목록은 오늘 이보다 크다
+# (형제 러너가 늘었고 docreview 러너는 두 플러그인에 배포돼 두 경로로 잡힌다).
+# 이 다섯이 스키마 계열을 전부 덮는다는 것이 이 절의 주장이고, 개수가 도출
+# 목록과 같다는 주장은 아니다 — 그 주장을 라벨에 박아 두면 러너가 늘 때마다
+# 조용히 거짓이 된다(실측: 「5 러너 전부」가 도출 8 앞에서 이미 거짓이었다).
+# 러너마다 두 시나리오로 잰다:
 #   - "빈-시작": OUTPUT_PATH를 빈 파일로 시작 → 0바이트·양성표식 검사에 이빨.
 #   - "stale-시작": OUTPUT_PATH에 이전 라운드의 "성공" YAML/JSON을 미리 심고
 #     시작 → stale-미재사용 검사에 이빨(양성표식 검사도 겸함).
 # 트리거는 러너마다 다르다 — 형제마다 CLAUDE_PLUGIN_ROOT 처리가 다르기
 # 때문이다 (그대로 흉내내면 안 되는 이유는 이 파일 헤더 및 task-20b-brief.md
-# 참고): run_codex_reviewer.sh/run_artifact_codex_reviewer.sh/
-# run_spec_codex_reviewer.sh는 `${CLAUDE_PLUGIN_ROOT}`를 가드 없이 참조하므로
+# 참고): run_codex_reviewer.sh/run_artifact_codex_reviewer.sh는
+# `${CLAUDE_PLUGIN_ROOT}`를 가드 없이 참조하므로
 # 환경에서 지우면 `set -u`가 스크립트를 완료 전에 죽인다(실제로 컨트롤러가 밟은
-# 조건). run_brief_codex_reviewer.sh/run_audit_codex_reviewer.sh는 fallback
+# 조건). run_brief_codex_reviewer.sh/run_audit_codex_reviewer.sh/
+# run_docreview_codex_reviewer.sh는 fallback
 # (`${CLAUDE_PLUGIN_ROOT:-...}`)이 있어 env-unset이 통하지 않는다 — 대신 그
 # 러너의 **종단 추출기**를 exit 0 + 빈 stdout 스텁으로 바꿔치기한 fake
 # CLAUDE_PLUGIN_ROOT에서 실행해 같은 실패 형태(추출이 "성공"했다고 exit하면서
@@ -222,45 +231,63 @@ PA="$ROOT/plugins/plugin-audit"
 
 # --- A) run_codex_reviewer.sh — 위 5/6이 이미 만든 $stale를 그대로 재사용
 #     (같은 시나리오를 두 번 돌리지 않는다) ---
-assert_degrade3 "5러너 A(run_codex_reviewer.sh, stale-시작)" "$stale" "STALE_FROM_PREVIOUS_RUN"
+assert_degrade3 "핵심3 A(run_codex_reviewer.sh, stale-시작)" "$stale" "STALE_FROM_PREVIOUS_RUN"
 
 # --- B) run_artifact_codex_reviewer.sh ---
 printf '아티팩트 fixture\n' > "$tmp/artifact-fix.md"
 b_empty="$tmp/degrade3-b-empty.yaml"; : > "$b_empty"
 run_until_aborted "$tmp/binabort" "$QG/scripts/run_artifact_codex_reviewer.sh" "$tmp/artifact-fix.md" "$ROOT" "$b_empty"
-assert_degrade3 "5러너 B(run_artifact_codex_reviewer.sh, 빈-시작)" "$b_empty" ""
+assert_degrade3 "핵심3 B(run_artifact_codex_reviewer.sh, 빈-시작)" "$b_empty" ""
 # 트리거를 신호로 바꿨으니 그 신호가 실제로 abort 경로를 밟았는지도 본다.
-# assert_degrade3 는 5러너 공통이라(D·E 는 다른 트리거를 쓴다) 여기 개별로 붙인다.
+# assert_degrade3 는 핵심3 공통이라(D·E 는 다른 트리거를 쓴다) 여기 개별로 붙인다.
 grep -q 'reason: *aborted_before_completion' "$b_empty" 2>/dev/null \
-  && ok "5러너 B: 중단이 abort 로 표시된다 (평범한 degrade 경로가 아니다)" \
-  || no "5러너 B: abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$b_empty" 2>/dev/null))"
+  && ok "핵심3 B: 중단이 abort 로 표시된다 (평범한 degrade 경로가 아니다)" \
+  || no "핵심3 B: abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$b_empty" 2>/dev/null))"
 
 b_stale="$tmp/degrade3-b-stale.yaml"
 printf '%s\n' 'agent: codex-reviewer' 'findings:' '  - {summary: "STALE_MARKER_B"}' 'meta:' '  codex_failed: false' > "$b_stale"
 run_until_aborted "$tmp/binabort" "$QG/scripts/run_artifact_codex_reviewer.sh" "$tmp/artifact-fix.md" "$ROOT" "$b_stale"
-assert_degrade3 "5러너 B(run_artifact_codex_reviewer.sh, stale-시작)" "$b_stale" "STALE_MARKER_B"
+assert_degrade3 "핵심3 B(run_artifact_codex_reviewer.sh, stale-시작)" "$b_stale" "STALE_MARKER_B"
 grep -q 'reason: *aborted_before_completion' "$b_stale" 2>/dev/null \
-  && ok "5러너 B(stale-시작): 중단이 abort 로 표시된다" \
-  || no "5러너 B(stale-시작): abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$b_stale" 2>/dev/null))"
+  && ok "핵심3 B(stale-시작): 중단이 abort 로 표시된다" \
+  || no "핵심3 B(stale-시작): abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$b_stale" 2>/dev/null))"
 
-# --- C) run_spec_codex_reviewer.sh (이미 준수 — 회귀 방지) ---
+# --- C) run_docreview_codex_reviewer.sh ---
+# 옛 C 는 spec-distill 의 옛 design-doc 러너였다. 문서 리뷰 엔진 전환(T7)이 그것을
+# 지웠고, design doc 자리가 실제로 부르는 러너가 이것이다 — **도출 목록에 들어 있는
+# 러너를 하나 잃으면 이 절의 커버리지가 조용히 4개로 줄어들므로** 자리를 승계한다.
+#
+# 인자 형태가 형제들과 다르다: `<profile> <doc> <project_dir> <out_yaml>` 넷이고
+# 프로필이 앞에 하나 더 붙는다(러너 자신의 파싱 그대로). 그리고 그 프로필은 최소
+# 파일로 충분하지 않다 — 러너의 인라인 빌더가 `layer_rubric`·`allowed_dispositions`
+# 를 못 읽으면 파싱 실패로 loud 하게 죽는다. 그래서 게이트를 통과할 만큼의
+# frontmatter 를 준다(codex_observation.sh 의 docreview arm 과 같은 모양).
 printf '# design doc fixture\n' > "$tmp/doc-fix.md"
+c_prof="$tmp/degrade3-c-profile.md"
+{
+  printf -- '---\n'
+  printf 'layer_rubric:\n  layer1: [observation]\n  layer2: []\n'
+  printf 'allowed_dispositions: [decide, ask]\n'
+  printf 'web: false\n'
+  printf -- '---\n'
+  printf 'degrade contract fixture profile\n'
+} > "$c_prof"
 c_empty="$tmp/degrade3-c-empty.yaml"; : > "$c_empty"
-run_until_aborted "$tmp/binabort" "$SD/scripts/run_spec_codex_reviewer.sh" "$tmp/doc-fix.md" "$ROOT" "$c_empty"
-assert_degrade3 "5러너 C(run_spec_codex_reviewer.sh, 빈-시작)" "$c_empty" ""
+run_until_aborted "$tmp/binabort" "$SD/scripts/run_docreview_codex_reviewer.sh" "$c_prof" "$tmp/doc-fix.md" "$ROOT" "$c_empty"
+assert_degrade3 "핵심3 C(run_docreview_codex_reviewer.sh, 빈-시작)" "$c_empty" ""
 # 트리거를 신호로 바꿨으니 그 신호가 실제로 abort 경로를 밟았는지도 본다.
-# assert_degrade3 는 5러너 공통이라(D·E 는 다른 트리거를 쓴다) 여기 개별로 붙인다.
+# assert_degrade3 는 이 절 공통이라(D·E 는 다른 트리거를 쓴다) 여기 개별로 붙인다.
 grep -q 'reason: *aborted_before_completion' "$c_empty" 2>/dev/null \
-  && ok "5러너 C: 중단이 abort 로 표시된다 (평범한 degrade 경로가 아니다)" \
-  || no "5러너 C: abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$c_empty" 2>/dev/null))"
+  && ok "핵심3 C: 중단이 abort 로 표시된다 (평범한 degrade 경로가 아니다)" \
+  || no "핵심3 C: abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$c_empty" 2>/dev/null))"
 
 c_stale="$tmp/degrade3-c-stale.yaml"
 printf '%s\n' 'findings:' '  - {file: OLD.py, line: 1, category: x, target_section: y, severity: CRITICAL, summary: "STALE_MARKER_C"}' 'meta:' '  codex_failed: false' > "$c_stale"
-run_until_aborted "$tmp/binabort" "$SD/scripts/run_spec_codex_reviewer.sh" "$tmp/doc-fix.md" "$ROOT" "$c_stale"
-assert_degrade3 "5러너 C(run_spec_codex_reviewer.sh, stale-시작)" "$c_stale" "STALE_MARKER_C"
+run_until_aborted "$tmp/binabort" "$SD/scripts/run_docreview_codex_reviewer.sh" "$c_prof" "$tmp/doc-fix.md" "$ROOT" "$c_stale"
+assert_degrade3 "핵심3 C(run_docreview_codex_reviewer.sh, stale-시작)" "$c_stale" "STALE_MARKER_C"
 grep -q 'reason: *aborted_before_completion' "$c_stale" 2>/dev/null \
-  && ok "5러너 C(stale-시작): 중단이 abort 로 표시된다" \
-  || no "5러너 C(stale-시작): abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$c_stale" 2>/dev/null))"
+  && ok "핵심3 C(stale-시작): 중단이 abort 로 표시된다" \
+  || no "핵심3 C(stale-시작): abort 표시 없음 — 트리거가 중단을 못 일으켰다 ($(tr '\n' ' ' < "$c_stale" 2>/dev/null))"
 
 # --- D) run_brief_codex_reviewer.sh — CLAUDE_PLUGIN_ROOT에 fallback이 있어
 #     env-unset 트리거가 안 통한다. 종단 추출기를 exit0+빈출력 스텁으로 바꾼
@@ -279,13 +306,13 @@ printf '브리프 fixture\n사용자 원문 예시\n' > "$tmp/payload-fix.md"
 d_empty="$tmp/degrade3-d-empty.yaml"; : > "$d_empty"
 PATH="$tmp/bin5:$PATH" CLAUDE_PLUGIN_ROOT="$tmp/rootD" \
   bash "$SD/scripts/run_brief_codex_reviewer.sh" fidelity "$tmp/payload-fix.md" "$ROOT" "$d_empty" >/dev/null 2>&1
-assert_degrade3 "5러너 D(run_brief_codex_reviewer.sh, 빈-시작)" "$d_empty" ""
+assert_degrade3 "핵심3 D(run_brief_codex_reviewer.sh, 빈-시작)" "$d_empty" ""
 
 d_stale="$tmp/degrade3-d-stale.yaml"
 printf '%s\n' 'findings:' '  - {summary: "STALE_MARKER_D"}' 'meta:' '  codex_failed: false' > "$d_stale"
 PATH="$tmp/bin5:$PATH" CLAUDE_PLUGIN_ROOT="$tmp/rootD" \
   bash "$SD/scripts/run_brief_codex_reviewer.sh" fidelity "$tmp/payload-fix.md" "$ROOT" "$d_stale" >/dev/null 2>&1
-assert_degrade3 "5러너 D(run_brief_codex_reviewer.sh, stale-시작)" "$d_stale" "STALE_MARKER_D"
+assert_degrade3 "핵심3 D(run_brief_codex_reviewer.sh, stale-시작)" "$d_stale" "STALE_MARKER_D"
 
 # --- E) run_audit_codex_reviewer.sh (이미 준수 — 회귀 방지, JSON 소비자) ---
 mkdir -p "$tmp/rootE/scripts"
@@ -298,13 +325,13 @@ printf '# axis question fixture\n' > "$tmp/axis-fix.md"
 e_empty="$tmp/degrade3-e-empty.json"; : > "$e_empty"
 PATH="$tmp/bin5:$PATH" CLAUDE_PLUGIN_ROOT="$tmp/rootE" \
   bash "$PA/scripts/run_audit_codex_reviewer.sh" "$tmp/axis-fix.md" "$ROOT" "$e_empty" >/dev/null 2>&1
-assert_degrade3 "5러너 E(run_audit_codex_reviewer.sh, 빈-시작)" "$e_empty" ""
+assert_degrade3 "핵심3 E(run_audit_codex_reviewer.sh, 빈-시작)" "$e_empty" ""
 
 e_stale="$tmp/degrade3-e-stale.json"
 printf '{"findings": [{"summary": "STALE_MARKER_E"}], "d_verdicts": [], "oq_answers": [], "new_open_questions": [], "meta": {"codex_failed": false}}\n' > "$e_stale"
 PATH="$tmp/bin5:$PATH" CLAUDE_PLUGIN_ROOT="$tmp/rootE" \
   bash "$PA/scripts/run_audit_codex_reviewer.sh" "$tmp/axis-fix.md" "$ROOT" "$e_stale" >/dev/null 2>&1
-assert_degrade3 "5러너 E(run_audit_codex_reviewer.sh, stale-시작)" "$e_stale" "STALE_MARKER_E"
+assert_degrade3 "핵심3 E(run_audit_codex_reviewer.sh, stale-시작)" "$e_stale" "STALE_MARKER_E"
 
 # ── FALLBACK: CLAUDE_PLUGIN_ROOT 부재에도 codex 에 도달한다 ───────────────────
 # 이 러너는 스킬의 bash 블록에서 호출된다. 그 환경에 CLAUDE_PLUGIN_ROOT 는 없다

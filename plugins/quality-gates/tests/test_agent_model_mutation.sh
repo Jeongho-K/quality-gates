@@ -27,7 +27,6 @@ pairs=(
   "plugins/quality-gates/agents/runtime-verifier.md|plugins/quality-gates/tests/test_runtime_verifier_frontmatter.sh"
   "plugins/spec-distill/agents/blind-spot-prober.md|plugins/spec-distill/tests/test_blind_spot_prober_frontmatter.sh"
   "plugins/spec-distill/agents/coverage-mapper.md|plugins/spec-distill/tests/test_coverage_mapper_frontmatter.sh"
-  "plugins/spec-distill/agents/spec-reviewer.md|plugins/spec-distill/tests/test_spec_reviewer_frontmatter.sh"
   "plugins/spec-distill/agents/steelman-builder.md|plugins/spec-distill/tests/test_steelman_builder_scope.sh"
   "plugins/spec-distill/agents/brief-critic.md|plugins/spec-distill/tests/test_brief_agents.sh"
   "plugins/spec-distill/agents/seed-critic.md|plugins/spec-distill/tests/test_seed_agents.sh"

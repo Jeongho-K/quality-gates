@@ -495,6 +495,7 @@ docreview:
         revived: 0
         lineage_mismatch: 1
         reraise_unconsumed: 0
+        escalated_unconsumed: 0
     '2':
       open_lineages:
       - 011167c4#r1.2
@@ -524,6 +525,7 @@ docreview:
         revived: 0
         lineage_mismatch: 0
         reraise_unconsumed: 0
+        escalated_unconsumed: 0
   pending_recritic: null
   rejected_lineages:
     011167c4#r1.1:

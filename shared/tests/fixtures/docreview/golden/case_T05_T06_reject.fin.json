@@ -257,6 +257,7 @@
  "advisory": [],
  "blocks": false,
  "reraise_unconsumed": 0,
+ "escalated_unconsumed": 0,
  "adjudication_accepted": 9,
  "adjudication_rejected": 1,
  "adjudication_held": 0,

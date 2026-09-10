@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1] — 2026-09-09
+
+### Fixed
+
+- **`scripts/run_audit_codex_reviewer.sh` 의 형제 러너 주석이 삭제된 spec-distill 파일을 가리키고 있었다.** design doc 자리가 문서 리뷰 엔진으로 전환되며 spec-distill 의 `run_spec_codex_reviewer.sh` 가 삭제됐다(`plugins/spec-distill/CHANGELOG.md` `[1.0.0]`) — "형제 러너" 주석을 `run_brief_codex_reviewer.sh`·`run_docreview_codex_reviewer.sh` 로 정정.
+- **`tests/test_run_audit_codex_reviewer.py` 의 blind-보존 금지어 목록이 존재하지 않는 빌더 이름을 검사하고 있었다.** `build_spec_codex_prompt` 는 이미 삭제된 파일이라 이 assertion 이 항상 vacuously 통과했다 — 현재 존재하는 `build_seed_codex_prompt` 로 교체해 다시 이빨을 갖게 했다. 동작 변경 없음, 새 surface 없음 — patch.
+
 ## [0.9.0] — 2026-09-06
 
 ### Changed

@@ -68,12 +68,16 @@ n_cl="$(find "$SD/scripts" -maxdepth 1 -name 'brief-codex-*-checklist.md' | wc -
 test -d "$SD/prompts" && no "T16: prompts/ 디렉토리 존재 (canonical 트리 위반)" \
   || ok "T16: prompts/ 디렉토리 부재"
 
-# 신규 파일 어디에도 spec 빌더 참조가 없다 (AC 주입 오염원)
+# brief 자리의 네 파일 어디에도 **design doc 자리의 프롬프트 소스** 참조가 없다
+# (AC 주입 오염원). 옛 오염원은 spec 빌더 스크립트였는데 문서 리뷰 엔진 전환(T7)이
+# 그것을 지웠고, design doc 자리의 프롬프트는 이제 그 엔진 러너 안에 인라인으로
+# 산다 — 토큰을 그 러너 이름으로 옮긴다. 삭제된 이름을 계속 금지하면 이 판정은
+# 「없는 것을 금지한다」가 되어 아무것도 재지 않는다.
 hits=0
 for f in "$BUILDER" "$RUNNER" "$CL_DIR" "$CL_FID"; do
-  grep -q "build_spec_codex_prompt" "$f" && hits=$((hits+1))
+  grep -q "run_docreview_codex_reviewer" "$f" && hits=$((hits+1))
 done
-[[ "$hits" == "0" ]] && ok "T16: build_spec_codex_prompt 미참조" || no "T16: spec 빌더를 $hits 곳에서 참조"
+[[ "$hits" == "0" ]] && ok "T16: design 자리 프롬프트 소스 미참조" || no "T16: design 자리 러너를 $hits 곳에서 참조"
 
 # runner의 CLAUDE_PLUGIN_ROOT fallback (§11 ⑪ — 기존 스크립트 결함 미반복)
 grep -q 'CLAUDE_PLUGIN_ROOT:-' "$RUNNER" \
@@ -176,8 +180,8 @@ rm -f "$STALE"; rm -rf "$MUTDIR"
 # 조용히 사라진다 — merge_brief_review.py가 merge_review.CODEX_DISPLAY_KEYS를
 # 재사용해 그 필드를 읽는데, 필드가 없으면 codex findings가 원장에서 통째로
 # 버려지면서도 codex_failed는 false로 남는다(실행되지 못한 검사가 통과한 검사로
-# 기록된다). run_spec_codex_reviewer.sh 쪽엔 이미 대칭 assertion이 있다
-# (test_run_spec_codex_reviewer.sh) — 여기 없던 것을 대칭으로 건다.
+# 기록된다). 형제 자리(design doc)엔 이미 대칭 assertion이 있다
+# (shared/tests/test_docreview_codex.sh) — 여기 없던 것을 대칭으로 건다.
 F1TMP="$(mktemp -d -t sd-brief-f1-XXXXXX)" || exit 1
 mkdir -p "$F1TMP/codexbin"
 cat > "$F1TMP/codexbin/codex" <<'SH'
@@ -193,7 +197,7 @@ chmod +x "$F1TMP/codexbin/codex"
 cp "$SD/scripts/runner_common.sh" "$F1TMP/runner_common.sh"
 
 # CLAUDE_PLUGIN_ROOT 를 **명시로** 넘긴다 — 형제 락
-# test_run_spec_codex_reviewer.sh:62 이 이미 그렇게 한다. 러너는
+# shared/tests/test_docreview_codex.sh 가 이미 그렇게 한다. 러너는
 # `${CLAUDE_PLUGIN_ROOT:-$(dirname "${BASH_SOURCE[0]}")/..}` 로 유도하므로,
 # ① 넘기지 않으면 호출 환경이 우연히 갖고 있는 값에 이 락의 판정이 좌우되고
 # ② 아래 mutation 사본은 temp dir 에 있어 유도가 엉뚱한 곳을 가리킨다

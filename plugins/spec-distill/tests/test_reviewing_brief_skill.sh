@@ -533,7 +533,7 @@ grep -qE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="\$\(bash "\$PR/scripts/detect_cod
 
 # --- AC18/AC9 : codex 호출 지점이 **전부** 가용성 게이트 안에 있다 ------------
 # kill switch(DEVBREW_SPEC_DISTILL_DISABLE_CODEX=1)는 detect_codex.sh를 거쳐 $codex_avail로만
-# 전달된다 — 러너는 이 변수를 보지 않는다(run_spec_codex_reviewer.sh와 같은 호출자-게이트
+# 전달된다 — 러너는 이 변수를 보지 않는다(run_docreview_codex_reviewer.sh와 같은 호출자-게이트
 # 규약). 게이트 밖 호출이 하나라도 있으면 (a) cost_class: high skill에서 사용자의 명시적
 # opt-out이 무시된 채 외부 모델에 지출이 나가고, (b) 1-c가 남기는 affected_axis: all record가
 # 거짓이 된다("codex가 양 축에서 없었다"고 적는데 실제로는 충실도를 봤다).

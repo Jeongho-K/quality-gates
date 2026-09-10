@@ -82,6 +82,7 @@
  ],
  "blocks": false,
  "reraise_unconsumed": 0,
+ "escalated_unconsumed": 0,
  "adjudication_accepted": 2,
  "adjudication_rejected": 0,
  "adjudication_held": 0,

@@ -26,7 +26,7 @@ user-invocable: false
 
   > `[spec-distill v0.24.0] brief 리뷰 파이프라인 SKIPPED (DEVBREW_SPEC_DISTILL_DISABLE_BRIEF_REVIEW=1) — 충실도·방향성·냉독 전부 미검증. Step B 게이트에서 확인하세요.`
 
-- `DEVBREW_SPEC_DISTILL_DISABLE_CODEX=1` → codex 호출만 skip(Claude 리뷰는 정상). `detect_codex.sh`가 이 스위치를 `codex_available: false`로 옮기고, **codex를 부르는 지점 전부**(1-c 방향성 · 2-b 충실도 · 2-c 충실도 재실행)가 같은 `$codex_avail`로 게이트됩니다. 러너(`run_brief_codex_reviewer.sh`)는 이 변수를 보지 않습니다 — 게이트는 **호출자 책임**입니다(`run_spec_codex_reviewer.sh`와 같은 규약). 한 지점이라도 게이트 밖이면 사용자 opt-out이 무시된 채 외부 모델에 지출이 나가고, 아래 `affected_axis: all` record가 거짓이 됩니다.
+- `DEVBREW_SPEC_DISTILL_DISABLE_CODEX=1` → codex 호출만 skip(Claude 리뷰는 정상). `detect_codex.sh`가 이 스위치를 `codex_available: false`로 옮기고, **codex를 부르는 지점 전부**(1-c 방향성 · 2-b 충실도 · 2-c 충실도 재실행)가 같은 `$codex_avail`로 게이트됩니다. 러너(`run_brief_codex_reviewer.sh`)는 이 변수를 보지 않습니다 — 게이트는 **호출자 책임**입니다(`run_docreview_codex_reviewer.sh`와 같은 규약). 한 지점이라도 게이트 밖이면 사용자 opt-out이 무시된 채 외부 모델에 지출이 나가고, 아래 `affected_axis: all` record가 거짓이 됩니다.
 - `DEVBREW_SPEC_DISTILL_DISABLE_WEB=1` → 양쪽 웹 없이 진행 + record.
 
 ## 진입 승인 게이트 (`cost_class: high`)
@@ -426,7 +426,7 @@ fi
 | ❌ | audit §6 기존 항목 본문 변경 |
 | ❌ | 상한을 넘긴 추가 재dispatch |
 
-**충실도에 라운드 루프를 두지 않는 이유**: `reviewing-spec`의 라운드 루프 + cap 5는 design doc 리뷰가 *설계 결함*을 찾는 반복 개선이라 정당합니다. 충실도는 *"§2 요약이 §6 원문을 왜곡했나"* 라는 좁고 거의 기계적인 축이라 반복 수렴 대상이 아닙니다 — 루프는 trivia ceremony입니다.
+**충실도에 라운드 루프를 두지 않는 이유**: `reviewing-spec`의 라운드 루프 + 재리뷰 상한(값의 정본은 문서 리뷰 엔진의 절차서다)은 design doc 리뷰가 *설계 결함*을 찾는 반복 개선이라 정당합니다. 충실도는 *"§2 요약이 §6 원문을 왜곡했나"* 라는 좁고 거의 기계적인 축이라 반복 수렴 대상이 아닙니다 — 루프는 trivia ceremony입니다.
 
 ## 3단계 — 냉독 (advisory 측정)
 

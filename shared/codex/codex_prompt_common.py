@@ -1,11 +1,13 @@
 """codex_prompt_common.py — codex 프롬프트 빌더들이 공유하는 stdout 가드 + P21 로더.
 
-정본화 이전 이력: 같은 stdout 인코딩 가드와 같은 P21(신뢰불가 입력 프리앰블) 로더가 네
-곳에 따로 있었다 — quality-gates 의 `build_codex_prompt.py`·`build_artifact_codex_prompt.py`,
-spec-distill 의 `build_spec_codex_prompt.py`·`build_brief_codex_prompt.py`. 주석까지
-바이트 단위로 같았다. P21 은 **보안 컨트롤**이라 네 벌로 두면 한 곳만 고쳤을 때 나머지
-셋이 조용히 옛 문구를 계속 내보낸다 — 그 실패는 프롬프트 안에서만 보이므로 관측되지
-않는다.
+이 모듈을 import 하는 빌더 (실측 도출: `grep -l 'from codex_prompt_common' plugins/*/scripts/`):
+quality-gates 의 `build_codex_prompt.py`·`build_artifact_codex_prompt.py`, spec-distill 의
+`build_brief_codex_prompt.py`·`build_seed_codex_prompt.py`.
+
+정본화 이전 이력: 같은 stdout 인코딩 가드와 같은 P21(신뢰불가 입력 프리앰블) 로더가 빌더
+마다 따로 있었고 주석까지 바이트 단위로 같았다. P21 은 **보안 컨트롤**이라 여러 벌로 두면
+한 곳만 고쳤을 때 나머지가 조용히 옛 문구를 계속 내보낸다 — 그 실패는 프롬프트 안에서만
+보이므로 관측되지 않는다.
 
 **배포는 심볼릭 링크가 아니라 물리 사본(`# copy-of:`)이다.** 아래 `P21_PREAMBLE_PATH`
 는 이 모듈 파일의 **형제**를 가리키는데, 링크로 배포하면 `.resolve()` 가 링크를 따라가

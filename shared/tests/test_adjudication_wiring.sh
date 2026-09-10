@@ -172,9 +172,21 @@ printf '%s\n' "$SCAN" | sed -n 's/^  STALE_EXEMPT //p' | while IFS= read -r l; d
   note "      낡은 면제: $l"
 done
 
+# T6b 재리뷰(F-2 판정 항목) — TERMINAL_CONSUMERS 는 EXEMPT 와 달리 신선도
+# 검사가 없어 파일이 지워지거나(PR 3) 앵커가 새로 생겨도(호스트 wiring) 등재가
+# 영원히 남을 수 있었다. `stale_terminal()` 로 EXEMPT 와 같은 축을 잰다(크기
+# baseline 은 25줄 예산 안에서 뺐다 — TERMINAL_CONSUMERS 는 아직 3건뿐이라
+# EXEMPT 급 성장 위험이 없고, 이 신선도 검사가 "영원히 남는다"는 실제 우려를
+# 이미 잡는다).
+terminal_stale="$(printf '%s\n' "$SCAN" | sed -n 's/^terminal_stale=//p')"
+assert_eq "$terminal_stale" "0" "TERMINAL_CONSUMERS 항목이 전부 여전히 유효하다 (파일이 아직 IMPORT + 아직 ANCHOR 없음)"
+printf '%s\n' "$SCAN" | sed -n 's/^  STALE_TERMINAL //p' | while IFS= read -r l; do
+  note "      낡은 TERMINAL_CONSUMERS: $l"
+done
+
 note "── 컴프리헨션 회귀 축 — 요구가 아니라 baseline"
 comp="$(printf '%s\n' "$SCAN" | sed -n 's/^comprehensions=//p')"
-COMP_BASELINE=39   # Task 1 F5 census 28 + Task 10 이 1 늘림(29) — merge_review.py
+COMP_BASELINE=58   # Task 1 F5 census 28 + Task 10 이 1 늘림(29) — merge_review.py
                    # `merged["report"]["counts"]`를 만드는 `{k: 0 for k in
                    # _MERGED_COUNT_KEYS}`. 항목을 버리는 자리가 아니라 값 0
                    # 으로 카운터를 초기화하는 자리라 처분 호출이 필요 없다.
@@ -207,6 +219,40 @@ COMP_BASELINE=39   # Task 1 F5 census 28 + Task 10 이 1 늘림(29) — merge_re
                    # 같은 S 에 온 라벨들을 모아 어휘 밖 값을 «골라내» 바로 다음 줄에서
                    # `hold()` 로 계수한다 — 컴프리헨션이 없으면 그 항목이 조용히
                    # 사라지던 자리를 소리 나게 만든 것이다.
+                   # Task 6 이 18 늘림(39→57) — **이 시점은 T6b 착수 전**이다.
+                   # `reviewing-spec/SKILL.md` 에 `consumer=docreview_route.py`
+                   # 앵커를 더한 그 커밋이 이 파일을 처음 ㉮(by_anchor 경유)에
+                   # 넣었고, 그 파일의 `ast` 실측 컴프리헨션이 18개다. 52591c9b
+                   # (T6b 시작 커밋)에 이미 `comprehensions=57` · baseline 39로
+                   # RED였다 — Task 6이 이 증가를 만들었지만 baseline을 못
+                   # 올리고 넘겼다.
+                   # T6b 가 그 RED를 닫는다(39→57, 순증가 0) — **인과관계
+                   # 정정(재리뷰 F-3)**: 최초 구현에서 이 자리를 "T6b가 36 늘림
+                   # (39→75)"로 적었으나 틀렸다. check_wiring.py의 심볼릭 링크
+                   # skip 제거(Ruling 8)는 `docreview_route.py`의 quality-gates
+                   # 배포 사본도 IMPORT에 잡히게 했을 뿐인데, 그 사본은 spec-
+                   # distill 사본과 바이트가 같은 파일이라 `_dedup_by_realpath()`
+                   # (F-2, check_wiring.py)가 `scan()`/`comprehension_count()`
+                   # 에서 한 번만 읽는다 — 그래서 T6b 자신이 이 축에 더하는
+                   # 순증가는 0이고, 39→57 전체가 Task 6의 것이다. 18개 전수
+                   # (`ast.walk` 로 직접 열거·확인) 중 어느 것도 판정 대상을
+                   # 조용히 골라내는 필터가 아니다 — 전부 (a) 무필터 매핑/투영
+                   # (:152·:272·:460·:553·:598·:45·:47·:157·:162), (b) 이미
+                   # 다른 자리에서 회계된 값 위의 재필터(:309 `live` — `_rejected`
+                   # 는 `_apply_recritic()` 의 `L.reject()` 와 같은 자리에서
+                   # 이미 대입됨, `check_wiring.py` 의 `_DR_ABSORB_GROUP_DEAD`
+                   # 참조), 또는 (c) `final`/`prev` 전체를 보존한 채 특정 보고
+                   # 필드용으로 부분집합을 뽑는 소진적 파티션(:519·:532·:554·
+                   # :555·:556·:487·:341 — 원본 리스트에서 항목을 빼지 않고
+                   # 다른 필드로 다시 투영할 뿐이다)이다.
+                   # Task 4 fix round 1(2026-09-08-docreview-design-doc-site,
+                   # 리뷰 I1) 이 1 늘린다(57→58) — `_decision_view` 의
+                   # `[_CHOICE_LABEL[c] for c in choices]`. `if` 절이 없는
+                   # 무필터 매핑(category (a), 위와 같은 종류) — `choices`(2 또는
+                   # 3개, 절대 빈 리스트가 아니다: `_decision_view` 는 disposition
+                   # =="decide" 인 항목에서만 불리고 그 상태는 항상 "open" 이라
+                   # `_decide_choices_for` 가 최소 두 항목을 낸다)의 모든 원소가
+                   # 라벨로 그대로 대응된다 — 버려지는 원소가 없다.
 if [ "${comp:-0}" -le "$COMP_BASELINE" ] 2>/dev/null; then
   ok "컴프리헨션 내포 $comp <= baseline $COMP_BASELINE"
 else

@@ -339,6 +339,267 @@ case_AC22_stale_pointer_cleared_via_redecide() {
   assert_eq "$(py docreview_state.py gate --state-dir "$d" | jgets '"'"$gid"'" in d["blocked_expired"]')" "True" "AC22: 재만료는 다시 막는다(픽스처 없이 CLI 로)"
   rm -rf "$d"
 }
+# ── 재상승 후속의 「보류」 거부 (Task 4 of 2026-09-08-docreview-design-doc-site,
+#    설계 §6.4 알려진 한계 (a)) ───────────────────────────────────────────────
+# 전방 포인터는 의무를 후속으로 «옮긴다» — 원본은 `superseded_by` 로 blocked_expired
+# 를 벗어나고 후속은 평범한 open decide 다. 그 후속에 「보류」가 통과하면 원본의
+# 차단을 한 홉 건너에서 푼다(AC20 의 전방 포인터 + AC21 의 예약 누적이 재상승을 항상
+# 성공시키면서 이 재설계 자신이 만든 결함). `case_AC22_stale_pointer_cleared_via_redecide`
+# 와 같은 경로로 픽스처 없이 실제 재상승 후속을 CLI 로 얻는다.
+case_AC22b_reraise_successor_hold_refused() {
+  local d; d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_DEC]"
+  py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice adopt --quote '채택' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null        # 라운드 2 — 변경 없음 → expired + 예약
+  # [Task 4 fix round 1 — 리뷰 I5 정정] route_r1 의 기본 critic(critic-r1.txt) 은 이
+  # decide 말고도 fix·ask 여러 건을 함께 만든다 — 그 클러터가 approval_ready 를 이
+  # 성공/재상승과 무관하게 늘 False 로 묶어, 아래 마지막 단언을 공허하게 만들었다
+  # (리뷰 실측: `_is_reraise_successor` 를 `return False` 로 눌러도 approval_ready
+  # 는 여전히 False — 4개의 다른 open decide·3개의 미적용 fix·1개의 차단 ask 가
+  # 계속 막았다). layer1·layer2 둘 다 «형식은 맞지만 빈» 블록으로 다른 finding 을
+  # 하나도 안 만든다 — finalize 뒤 원장에 남는 decide 는 재상승 후속 하나뿐이라,
+  # 이 항목의 상태 전이가 approval_ready 를 «직접» 정한다(아래 클러터-없음 선결조건
+  # 이 그 사실 자체를 잰다). 별도 mktemp 없이 `$d` 안에 둔다 — 케이스 끝의
+  # `rm -rf "$d"` 가 함께 지운다.
+  local empty_critic="$d/critic-empty.txt"
+  printf '리뷰 없음.\n\n```docreview-layer1\n[]\n```\n\n```docreview-layer2\n[]\n```\n' > "$empty_critic"
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$empty_critic" --codex "$FX/codex-failed.yaml" > "$d/prep2.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --diff "$d/diff2.json" --doc "$FX/design-sample.md" > "$d/fin2.json"
+  local succ; succ="$(jget "$d/fin2.json" '[x["id"] for x in d["findings"] if x["disposition"]=="decide" and "expired" in x["summary"]][0]')"
+  assert_eq "$(st_yaml "$d" 'st["decides"]["aaaa0001#r1.1"].get("superseded_by")')" "$succ" "AC22b: finalize 가 원본에 전방 포인터를 남긴다(선결조건, 재상승)"
+  assert_eq "$(st_yaml "$d" 'st["decides"]["'"$succ"'"]["state"]')" "open" "AC22b: 후속은 평범한 open decide 다(선결조건 — 열려 있지 않으면 「보류」시도 자체가 무의미)"
+  # I1(리뷰) — fin.json 채널 자체를 잠근다. `gate_summary` 는 선택지 목록을 전혀
+  # 안 내므로(버킷만) JSON 을 읽는 소비자에게는 이 필드가 유일한 선택지 채널이다 —
+  # render 만 맞고 fin.json 의 decision_view.alternatives 는 여전히 셋을 내던 것이
+  # 리뷰가 실측으로 잡은 결함(fin.json·state.md·골든 셋 다 새는 채널).
+  assert_eq "$(jget "$d/fin2.json" '[x["decision_view"]["alternatives"] for x in d["findings"] if x["id"]=="'"$succ"'"][0]')" \
+    "['채택(적용)', '기각(원복)']" "AC22b: fin.json 의 decision_view.alternatives 에도 「보류」가 없다(I1 — JSON 채널)"
+  # I5(리뷰) — 선결조건: 이 항목이 유일한 열린 항목이다(클러터 없음). 이게 없으면
+  # 아래 마지막 단언은 이 성공/실패와 무관하게 항상 False 라 아무것도 못 잰다.
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" | jgets 'd["open_decide"], d["unapplied_fix"], d["blocking_ask_open"]')" \
+    "(['$succ'], [], [])" "AC22b: 선결조건 — 재상승 후속이 유일한 열린 항목이다(클러터 없음, I5)"
+  local out rc
+  # `fail()`(§docreview_state.py) 은 실패 JSON 을 stderr 로 낸다 — `2>&1` 로 합쳐야
+  # $out 이 실제로 그 JSON 을 받는다(성공 경로의 `_emit` 은 stdout, 실패는 stderr).
+  out="$(py docreview_state.py decide --state-dir "$d" --id "$succ" --choice hold --quote '보류' 2>&1)"; rc=$?
+  assert_eq "$rc $(printf '%s' "$out" | jgets 'd.get("reason")')" "1 decide_hold_not_allowed_for_reraise_successor" \
+    "AC22b: 재상승 후속의 「보류」는 거부된다(원본의 차단을 한 홉 건너에서 풀지 못한다) — 사유까지 검증(I3)"
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" | jgets 'd["approval_ready"]')" "False" \
+    "AC22b: 보류 시도 뒤에도 승인은 열리지 않는다(I5 — 이 항목이 유일한 블로커였으므로 공허하지 않다)"
+  rm -rf "$d"
+}
+# ── 재상승 후속의 kind·prev_hash 승계 (Task 5, 설계 §6.4 알려진 한계 (b)) ────────
+# 원본이 post(얼림 diff 가 만든 사후 결정)였고 「기각」으로 원복 permit(expect_hash =
+# 기각 시점 스냅샷 해시)이 열렸는데 그 원복이 관측되지 않아 만료하면, 후속은 원본의
+# kind·prev_hash 를 물려받아야 한다 — 하드코딩된 "pre" 는 「채택」이 해시 대조 없는
+# apply permit 을 열게 만들어 원복 의무를 「앵커가 닿기만 하면 통과」로 강등시킨다
+# (되돌리지 않은 얼림 위반이 그대로 승인된다). `_post_with_real_hash`(T25·T26 이
+# 쓰는 헬퍼, 실제 r1 해시를 prev_hash 로 갖는 post finding 을 심고 기각까지 걷는다)
+# 로 원복 permit 을 연 뒤, 그 라운드 관측 안 됨(post 만료)까지 실제로 걷고
+# finalize 로 후속을 낸다.
+#
+# [fix round 1 — 리뷰 I1 정정] 브리프 Step1 의 넷째 단언(사후 고지 꼬리)을 원판에서
+# finalize «전» 원본(`case_AC22_post_expiry_render_tail` 과 같은 대상·같은 리터럴,
+# cases.sh 구판 411-412)으로 옮겨 달았었다 — 이미 있는 락의 verbatim 중복이라 새로
+# 재는 게 없었고(M2), 「선결조건」이라는 라벨이 그 단언이 충족된 것처럼 읽히게
+# 만들었다. 리뷰가 이것을 브리프 내부 불일치(Step2 스니펫만으로는 Step1 을 못 채움)
+# 로 판정해 escalate 했고, 처분은 `_rg_decide` 에 같은 꼬리를 잇는 것으로 났다
+# (docreview_state.py, `_post_kind_notice` 공유 헬퍼 — 리터럴은 여전히 한 곳). 이제
+# 이 케이스는 후속 «자신의» 렌더(finalize 뒤, open_decide → `_rg_decide`)에서 직접
+# 꼬리를 잰다 — 예전 선결조건 중복은 필요 없어졌으므로 지웠다.
+case_AC22c_reraise_inherits_post_kind() {
+  local d; d="$(_post_with_real_hash)"; next_round "$d" "$FX/design-sample-r2.md" >/dev/null   # 원복 관측 안 됨 → expired + 재상승 예약
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep3.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --diff "$d/diff3.json" --doc "$FX/design-sample-r2.md" > "$d/fin3.json"
+  # M4(fix round 1) — 부분문자열("expired" in summary) 대신 계보 포인터로 구조적으로
+  # 고른다. 원본 id 는 `_post_with_real_hash`/F_POST 가 고정한 "dddd0001#r2.1" 이고,
+  # 재상승 후속만 `supersedes` 에 이 값을 싣는다(escalated 후속도 `supersedes` 를
+  # 쓰지만 이 라운드엔 없다) — summary 어휘가 critic 픽스처를 따라 바뀌어도 안 흔들린다.
+  local succ; succ="$(jget "$d/fin3.json" '[x["id"] for x in d["findings"] if x["supersedes"]=="dddd0001#r2.1"][0]')"
+  assert_eq "$(st_yaml "$d" 'st["decides"]["'"$succ"'"]["kind"]')" "post" "AC22c: 후속이 원본의 kind(post)를 물려받는다(하드코딩 pre 가 아니다)"
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" --render | grep -c '원복 의무를 관측 없이 종결한다')" "1" \
+    "AC22c: 후속(open decide) 자신의 렌더에 원복 경고 꼬리가 실린다(§6.4 한계 (b) 후속 경로 — fix round 1 I1)"
+  local out; out="$(py docreview_state.py decide --state-dir "$d" --id "$succ" --choice adopt --quote '재확인: 이번엔 채택')"
+  assert_eq "$(printf '%s' "$out" | jgets 'd["state"], d["permit"]')" "('applied', None)" "AC22c: post 후속의 「채택」은 즉시 applied 다(사후 채택의 계약 — pre 였다면 adopted + apply permit)"
+  rm -rf "$d"
+}
+# 위 케이스와 같은 셋업이지만 kind 승계와 «독립»된 축(prev_hash)만 잰다 — 변이
+# ①(kind 하드코딩 복원)과 변이 ②(prev_hash 승계 삭제)가 한 케이스 안에서 서로를
+# 가리지 않도록 쪼갠다(브리프 Step 3 — 하나를 되돌려도 다른 단언이 여전히 RED 면
+# 매트릭스에서 어느 변이가 어느 단언을 잡았는지 구별이 안 된다). `prev_hash` 는
+# `record_findings` 가 `PUBLIC_FIELDS` 를 거치지 않고 항목에서 직접 읽으므로
+# (`st["decides"][fid] = {..., "prev_hash": it.get("prev_hash"), ...}`, `kind`
+# 처럼 `PUBLIC_FIELDS` 목록에 없어도 decides 레코드에 실린다) 이 단언은 그 경로가
+# 실제로 값을 나른다는 것까지 함께 잰다.
+case_AC22c_reraise_inherits_prev_hash() {
+  local d; d="$(_post_with_real_hash)"; next_round "$d" "$FX/design-sample-r2.md" >/dev/null   # 원복 관측 안 됨 → expired + 재상승 예약
+  local orig_hash; orig_hash="$(st_yaml "$d" 'st["decides"]["dddd0001#r2.1"]["prev_hash"]')"
+  # M1(fix round 1) — 공허성 바닥. 양변이 같은 원장에서 나오므로 `record_findings`
+  # 가 `prev_hash` 를 아예 안 싣게 되면 둘 다 `None` 이 되어 아래 등식이 «공허하게»
+  # GREEN 이 된다(리뷰의 V1 프로브가 실측으로 확인). 원본이 실제 12자리 hex 해시임을
+  # 먼저 박아, 등식이 None==None 으로 새지 않게 한다.
+  assert_grep "$orig_hash" '^[0-9a-f]{12}$' "AC22c: 선결조건(공허성 바닥) — 원본 prev_hash 가 실제 해시 모양이다(None==None 등식이 아니다)"
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep3.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --diff "$d/diff3.json" --doc "$FX/design-sample-r2.md" > "$d/fin3.json"
+  local succ; succ="$(jget "$d/fin3.json" '[x["id"] for x in d["findings"] if x["supersedes"]=="dddd0001#r2.1"][0]')"
+  assert_eq "$(st_yaml "$d" 'st["decides"]["'"$succ"'"]["prev_hash"]')" "$orig_hash" "AC22c: 후속의 prev_hash 가 원본의 prev_hash 와 같다"
+  rm -rf "$d"
+}
+# [Task 5 실행 노트 — fix round 1 I2 정정] 브리프의 두 변이(하드코딩 "pre" 복원 ·
+# prev_hash 승계 삭제)는 «post» 원본만 겨눈다. `d0.get("kind")` 는 양방향 값을
+# 다루는 식이라, 반대 방향 회귀(«pre» 원본인데 후속이 "post" 로 과잉 승계되는 것
+# — kind 를 무조건 "post" 로 강제하는 변이)를 이 케이스가 새로 잰다. **이 케이스가
+# 그 방향을 "처음 잡는" 락은 아니다** — 원판 코멘트가 「그때까지 그 방향을 잡는
+# 락이 하나도 없었다」고 주장한 것은 리뷰가 측정으로 반증했다: 같은 변이로
+# `test_docreview_golden.sh` 가 RED(가 T22 후속의 `"kind"` 가 pre→post 로 바뀌어
+# `.fin.json`·`.state.md` 둘 다 어긋난다)이고 `case_AC20_reexpiry_blocks_again` 도
+# RED(2) 다(post 후속은 채택 즉시 applied 라 그 케이스가 기대하는 재만료 자체가
+# 안 일어난다). 이 케이스가 유일하게 갖는 값은 **귀속** 이다 — 골든 diff 도
+# AC20③ 의 실패 메시지도 `kind` 를 한 글자도 언급하지 않는 반면, 이 케이스는
+# `st["decides"][succ]["kind"]` 를 직접 단언해 무엇이 깨졌는지 이름을 붙인다.
+# 위험한 이유는 여전히 옳다: "post" 로 잘못 태어나면 「채택」이 `cmd_decide` 의
+# `if d.get("kind") == "post":` 분기를 타 permit 없이 즉시 applied 로 끝난다 —
+# 「실제로 그 편집이 관측됐는가」를 permit 이 검증하는 pre 의 정상 계약을 건너뛴다.
+# `case_AC22_stale_pointer_cleared_via_redecide` 의 앞부분(F_DEC 채택 → 무변경 →
+# expired → finalize)과 같은 셋업을 재사용해 실제 라우팅으로 후속을 낸다.
+case_AC22c_reraise_preserves_pre_kind() {
+  local d; d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_DEC]"
+  py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice adopt --quote '채택' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null        # 라운드 2 — 변경 없음 → expired + 예약
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep2.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --diff "$d/diff2.json" --doc "$FX/design-sample.md" > "$d/fin2.json"
+  # M4(fix round 1) — 위와 같은 구조적 선택자. 원본 id 는 F_DEC 의 고정 id
+  # "aaaa0001#r1.1".
+  local succ; succ="$(jget "$d/fin2.json" '[x["id"] for x in d["findings"] if x["supersedes"]=="aaaa0001#r1.1"][0]')"
+  assert_eq "$(st_yaml "$d" 'st["decides"]["'"$succ"'"]["kind"]')" "pre" "AC22c: pre 원본의 후속은 pre 로 남는다(post 로 과잉 승계되지 않는다)"
+  rm -rf "$d"
+}
+# `decide_choices` 를 실제로 import 해 낸다(문자열로 옮겨 적지 않는다) — heredoc-in-$()
+# 파싱 함정을 피해 st_yaml 처럼 python -c 한 줄로 둔다.
+dc_choices() {   # dc_choices <state-dir> <fid> → decide_choices(st, fid) 의 python 리스트 repr
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from docreview_state import load_state, decide_choices; st = load_state(sys.argv[2]); print(decide_choices(st, sys.argv[3]))' "$SCRIPTS" "$1" "$2"
+}
+# render 의 그 id 블록에서 「대안:」 줄을 뽑아 decide_choices 가 내는 집합과 «라벨로
+# 바꾼 뒤» 비교한다(라벨 문자열이 아니라 집합 — 순서 무관). fid 는 hash 파생이라
+# "] <fid> —" 조합이 그 id 의 [decide…] 헤더 줄에서만 나온다.
+choices_match() {   # choices_match <render-text> <fid> <state-dir> → True/False
+  local alt; alt="$(printf '%s\n' "$1" | grep -F -A4 -- "] $2 —" | grep '대안: ' | head -1)"
+  python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from docreview_state import load_state, decide_choices
+LABEL = {"adopt": "채택(적용)", "reject": "기각(원복)", "hold": "보류"}
+st = load_state(sys.argv[2])
+choices = decide_choices(st, sys.argv[3])
+expected = {LABEL[c] for c in choices}
+alt_line = sys.argv[4]
+offered = set()
+if "대안: " in alt_line:
+    offered = {x.strip() for x in alt_line.split("대안: ", 1)[1].split("/")}
+print(bool(choices) and expected == offered)
+' "$SCRIPTS" "$3" "$2" "$alt"
+}
+# [Task 4 fix round 1 — 리뷰 I4] `_rg_expired` 도 괄호 안에 선택지를 나열한다 —
+# `_rg_decide` 의 「대안:」 줄과는 다른 형식(별도 줄이 아니라 한 줄에 인라인)이라
+# `choices_match` 를 그대로 못 쓴다. 정규식으로 다시 파싱하지 않는다 — 라벨
+# 자체가 괄호를 품는다(`채택(적용)`). 대신 실제로 찍히는 접두사·형식을 그대로
+# 재구성해 벗겨낸다(프로그램의 포맷 문자열과 같은 모양).
+choices_match_expired() {   # choices_match_expired <render-text> <fid> <state-dir> → True/False
+  local line; line="$(printf '%s\n' "$1" | grep -F -- "[만료·차단] $2 —" | head -1)"
+  python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from docreview_state import load_state, decide_choices
+LABEL = {"adopt": "채택(적용)", "reject": "기각(원복)", "hold": "보류"}
+st = load_state(sys.argv[2])
+fid = sys.argv[3]
+choices = decide_choices(st, fid)
+expected = {LABEL[c] for c in choices}
+line = sys.argv[4]
+summary = st["findings"][fid].get("summary") or ""
+prefix = "[만료·차단] %s — %s (" % (fid, summary)
+offered = set()
+if line.startswith(prefix) and line.endswith(")"):
+    body = line[len(prefix):-1].split(" — ", 1)[0]   # post 만료 원복-경고 꼬리 제거
+    offered = {x.strip() for x in body.split("/")}
+print(bool(choices) and expected == offered)
+' "$SCRIPTS" "$3" "$2" "$line"
+}
+# 「제안 = 수용」 등식 — 한 state 안에 세 부류(평범한 open · expired(비후속) · 재상승
+# 후속)를 모두 만들고 각각을 잰다. 셋 다 이제 렌더 텍스트로 비교한다(open 둘은
+# `_rg_decide` 의 「대안:」 줄, expired 는 `_rg_expired` 의 인라인 괄호 — [Task 4
+# fix round 1, 리뷰 I4] 전에는 expired 쪽을 `decide_choices` 하나로만 쟀는데,
+# `_rg_expired` 가 «따로» 하드코딩한 열거가 그 함수와 갈려도 이 락은 구조적으로
+# 못 봤다 — 이제 렌더 텍스트 자체를 검사해 그 축도 잡는다). `dc_choices` 로도
+# 한 번 더 재는 것은 렌더 파싱과 무관하게 함수 자체가 맞는지 보는 이중 확인이다.
+case_choices_offered_equal_accepted() {
+  local d; d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_DEC]"
+  py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice adopt --quote '채택' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null        # 라운드 2 — 변경 없음 → expired + 예약
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep2.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --diff "$d/diff2.json" --doc "$FX/design-sample.md" > "$d/fin2.json"
+  local succ normal
+  succ="$(jget "$d/fin2.json" '[x["id"] for x in d["findings"] if x["disposition"]=="decide" and "expired" in x["summary"]][0]')"
+  # critic-nolayer2 가 같은 라운드에 만드는 무관 lineage(Non-goals, aaaa 와 다른 bucket)
+  # — 이것이 「평범한 open」. [리뷰 I2] 이 항목은 재상승 사슬(aaaa→succ)과 «같은
+  # state 안에 공존»한다 — 아래 마지막 단언(양성 짝)이 정확히 이 공존을 이용한다.
+  normal="$(jget "$d/fin2.json" '[x["id"] for x in d["findings"] if x["disposition"]=="decide" and "expired" not in x["summary"]][0]')"
+  # 「expired(비후속)」 — 새 decide 를 이번 라운드(2)에 심어 채택 → 다음 라운드
+  # 무변경 → expired, 후속은 만들지 않는다(finalize 를 다시 안 부른다).
+  seed_findings "$d" '[{"id":"ffff0001#r2.1","lineage":"ffff0001#r2.1","bucket":"ffff0001","origin":"reviewer","layer":2,"category":"ambiguity","anchor":"#2-goals","edit_scope":"#2-goals","disposition":"decide","summary":"막힌 만료 테스트용","evidence":null,"blocks":[],"kind":"pre"}]'
+  py docreview_state.py decide --state-dir "$d" --id 'ffff0001#r2.1' --choice adopt --quote '채택' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null        # 라운드 3 — 변경 없음 → ffff expired(후속 없음)
+  local blocked="ffff0001#r2.1"
+
+  assert_eq "$(st_yaml "$d" 'st["decides"]["'"$succ"'"]["state"]')" "open" "선결: 재상승 후속은 open 이다"
+  assert_eq "$(st_yaml "$d" 'st["decides"]["'"$normal"'"]["state"]')" "open" "선결: 평범한 항목도 open 이다"
+  assert_eq "$(st_yaml "$d" 'st["decides"]["'"$blocked"'"]["state"], st["decides"]["'"$blocked"'"].get("superseded_by")')" "('expired', None)" "선결: 막힌 항목은 후속 없이 expired 다"
+
+  local render; render="$(py docreview_state.py gate --state-dir "$d" --render)"
+  assert_eq "$(choices_match "$render" "$normal" "$d")" "True" "제안=수용: 평범한 open — 「대안:」 줄과 decide_choices 가 같은 집합"
+  assert_eq "$(choices_match "$render" "$succ" "$d")" "True" "제안=수용: 재상승 후속 — 「대안:」 줄과 decide_choices 가 같은 집합(둘 다 보류 없이 둘)"
+  assert_eq "$(dc_choices "$d" "$blocked")" "['adopt', 'reject']" "제안=수용: expired(비후속) — decide_choices 도 보류 없이 둘"
+  assert_eq "$(choices_match_expired "$render" "$blocked" "$d")" "True" \
+    "제안=수용: expired(비후속) — 렌더의 괄호 열거와 decide_choices 가 같은 집합(I4 — 렌더 텍스트로도 잰다)"
+
+  # [리뷰 I2] 양성 짝 — `_is_reraise_successor` 가 `== fid`(대상 특정) 대신
+  # `is not None`(존재만) 으로 넓어지면, 이 state 안에 재상승 사슬이 살아 있다는
+  # 사실 «자체»가 무관한 $normal 의 「보류」까지 잘못 거부한다. 위 두 choices_match
+  # 단언은 양쪽이 같은 decide_choices 에서 나오므로 이 축을 구조적으로 못 본다
+  # (순환) — 실제 CLI 성공 여부로 따로 잰다. 다른 단언이 읽는 상태를 바꾸므로
+  # 이 케이스의 맨 끝에 둔다.
+  local out_hold rc_hold
+  # `fail()` 은 stderr 로 낸다(`2>&1` 로 합친다) — 실패하면 "state" 키 자체가 없는
+  # JSON(`{"ok": false, "reason": ..., "id": ...}`) 이라 `.get()` 으로 받는다
+  # (`d["state"]` 는 그 갈래에서 KeyError 로 죽어 판정을 「못 잼」으로 가린다 —
+  # 매트릭스 헤더의 "값이 아예 사라질 수 있는 변이" 함정, R19/R20).
+  out_hold="$(py docreview_state.py decide --state-dir "$d" --id "$normal" --choice hold --quote '보류 — 재상승과 무관' 2>&1)"; rc_hold=$?
+  assert_eq "$rc_hold $(printf '%s' "$out_hold" | jgets 'd.get("state")')" "0 held" \
+    "I2 양성 짝: 재상승 사슬과 공존하는 평범한 open 의 「보류」는 여전히 성공한다"
+  rm -rf "$d"
+}
+# [Task 4 fix round 1 — 리뷰 I3/Ruling 32] 사유 리터럴 셋 중 나머지 둘 — 「재상승
+# 후속」쪽은 case_AC22b_reraise_successor_hold_refused 가 이미 JSON 으로 잰다(위).
+# 브리프가 「기존 케이스가 그 문자열을 재고 있다」고 전제했던 것은 실은 거짓이었다
+# (git grep 은 이 셋을 어떤 테스트도 원장 JSON 으로 재지 않았음을 보였다) — 그
+# 전제를 참으로 만든다. `cases.sh:1008`(`case_AC6_reject_reasons_extra`)의 관용구
+# (`assert_eq "$rc $(... reason)" "1 <literal>"`)를 그대로 쓴다.
+case_decide_reason_literals_not_open_and_expired() {
+  local d out rc
+  # `fail()` 은 실패 JSON 을 stderr 로 낸다 — 둘 다 `2>&1` 로 합친다.
+  d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_DEC]"
+  py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice reject --quote '기각' >/dev/null
+  out="$(py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice adopt --quote '다시' 2>&1)"; rc=$?
+  assert_eq "$rc $(printf '%s' "$out" | jgets 'd.get("reason")')" "1 decide_not_open" \
+    "사유 리터럴: rejected 상태의 재결정 → decide_not_open"
+  rm -rf "$d"
+  d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_DEC]"
+  py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice adopt --quote '채택' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null        # 변경 없음 → expired(비후속)
+  out="$(py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice hold --quote '보류' 2>&1)"; rc=$?
+  assert_eq "$rc $(printf '%s' "$out" | jgets 'd.get("reason")')" "1 decide_hold_not_allowed_for_expired" \
+    "사유 리터럴: 평범한 expired 의 보류 → decide_hold_not_allowed_for_expired"
+  rm -rf "$d"
+}
 case_T23_post_adopt_applied() {
   local d; d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; next_round "$d" "$FX/design-sample-r2.md" >/dev/null
   seed_findings "$d" "[$F_POST]"
@@ -1029,7 +1290,38 @@ case_AC21_unconsumed_counted() {
 # (reraise 의 AC21_reraise_accumulates 와 같은 종류의 조기-반환 상황) — cases.sh 에
 # 그런 케이스가 없어 여기서 만든다. 같은 finalize 호출 안에서 이월(불일치, round=1)과
 # 소비(일치, round=2)를 동시에 겨눠 둘을 한 번에 가른다.
-case_escalated_round_mismatch_carries_over() {
+# [Task 2 — 락 뒤집기] 이 케이스는 원래 `case_escalated_round_mismatch_carries_over`
+# 였고, `_auto_decides` 의 escalated 갈래가 `!= n - 1`(정확히 직전 라운드의 예약만
+# 소비)이던 시절에 둘째 단언으로 *"소비되지 않은 라운드 1 예약은 버려지지 않고
+# 다음으로 이월된다"* 를 **의도된 동작**으로 못 박았다. Task 2 가 그 규칙을
+# `>= n`(이번 라운드보다 앞선 예약 전부를 소비)으로 뒤집는다 — `finalize` 가 이
+# 루프 전에 조기 반환한 라운드가 하나라도 끼면 라운드 번호가 영원히 어긋나 그
+# 예약이 소비도 계수도 안 되는 결함이 있었기 때문이다(형제 reraise, AC21 이 같은
+# 결함을 먼저 닫았다). 그래서 둘째 단언의 뜻도 뒤집힌다 — 라운드 1 예약은 이제
+# «이월»이 아니라 «이번 라운드에 소비»된다. 케이스 이름도 `case_escalated_accumulates`
+# 로 바꾼다. **[F-4 재리뷰 정정]** 원 시나리오의 핵심 골격(라운드 1 escalate → 라운드
+# 2 finalize 건너뜀 → 라운드 2 escalate → 라운드 3 finalize)은 그대로 두지만, 아래
+# 실행 노트(§ 실측)가 밝히듯 그 골격만으로는 뒤집을 대상(「아직 자기 차례가 아닌
+# 예약은 보존된다」)이 한 번도 안 밟혀 — 시나리오에 예약 하나를 **더했다**(라운드
+# 3 에 다시 escalate). 바뀐 것은 기대값만이 아니다 — 시나리오도 최소한으로 늘었다.
+#
+# BEFORE(뒤집기 전 — GREEN 이었던 사실, report 에 그대로 인용):
+#   assert_eq ... "['$fid2']" "escalated 이월: round 불일치(라운드 1 예약)는 이번
+#     라운드(n-1=2)에 소비되지 않고, 일치하는 것(라운드 2 예약)만 decide 로 올라온다"
+#   assert_eq "$(st_yaml "$d" 'sorted(e["finding_id"] for e in st["escalated"])')"
+#     "['$fid1']" "escalated 이월: 소비되지 않은 라운드 1 예약은 버려지지 않고 다음으로
+#     이월된다(round 필드 그대로)"
+# AFTER(뒤집은 뒤 — 아래 본문): fid1·fid2 둘 다 소비되어 decide 로 올라온다.
+# [Task 2 실행 노트 — 회귀 실측] `>= n` 아래에서는 원 시나리오(라운드 1·2 에 escalate,
+# 라운드 3 에 finalize)만으로는 "아직 자기 차례가 아닌" 예약을 하나도 안 만든다 —
+# n=3 에 도달한 시점엔 round=1·round=2 예약 «둘 다» 이미 과거라 즉시 소비되고,
+# `keep_esc.append(e)` 가 한 번도 안 불린다(실측: ㉙ `escalated_mismatch_dropped`
+# 셀이 no_teeth 로 떨어짐 — `keep_esc.append(e)` 를 지워도 이 케이스가 안 흔들렸다).
+# 그래서 **같은 라운드에 escalate 한 예약**(round == n, 아직 자기 차례가 아님)을
+# 셋째로 더한다 — fid1 을 라운드 3(이번 finalize 와 같은 라운드)에 다시 escalate
+# 하면 그 예약은 이번 라운드 판정에서 `round(3) >= n(3)` 이라 보류된다(dedup 과는
+# 안 섞인다 — 라운드 검사가 dedup 검사보다 앞서 걸러낸다, `_auto_decides` 참조).
+case_escalated_accumulates() {
   local d; d="$(route_r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"
   local fid1 fid2
   fid1="$(fsum "$d" 'AC 가 하나뿐' '["id"]')"        # #1-context, category ambiguity, disposition fix
@@ -1038,14 +1330,116 @@ case_escalated_round_mismatch_carries_over() {
   next_round "$d" "$FX/design-sample.md" >/dev/null   # 라운드 2 — finalize 를 부르지 않고 건너뛴다
   py docreview_state.py fix --state-dir "$d" --id "$fid2" --event escalate --reason 'check-intent 거부(라운드 2)' >/dev/null
   next_round "$d" "$FX/design-sample.md" >/dev/null   # 라운드 3
+  py docreview_state.py fix --state-dir "$d" --id "$fid1" --event escalate --reason 'check-intent 거부(라운드 3, 아직 자기 차례가 아님)' >/dev/null
   py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep3.json"
   py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --diff "$d/diff3.json" --doc "$FX/design-sample.md" > "$d/fin.json"
-  # n=3, n-1=2 — fid1(round=1) 은 불일치라 이월(소비되지 않음), fid2(round=2) 는 일치해
-  # 이번 라운드에 decide 로 올라온다. `supersedes in (fid1,fid2)` 로 걸러 다른 자동
-  # 항목(같은 라운드 critic 이 우연히 만드는 Non-goals 자동 연결 등)과 섞이지 않게 한다.
+  # n=3. 새 계약: 「직전 라운드」가 아니라 「이번 라운드보다 앞선」 예약을 전부 소비한다
+  # — fid1(round=1)·fid2(round=2) 둘 다 이번 finalize 에서 decide 로 올라온다.
+  # `supersedes in (fid1,fid2)` 로 걸러 다른 자동 항목(같은 라운드 critic 이 우연히
+  # 만드는 자동 연결 등)과 섞이지 않게 한다. 정렬은 id 문자열 순 — fid1·fid2 의 실제
+  # 정렬 순서는 실행 시점 값에 달렸으므로 기대값도 같은 sorted() 규칙으로 낸다.
+  local expected; expected="$(python3 -c 'import sys; print(sorted(sys.argv[1:]))' "$fid1" "$fid2")"
   assert_eq "$(jget "$d/fin.json" 'sorted(x["supersedes"] for x in d["findings"] if x.get("supersedes") in ("'"$fid1"'", "'"$fid2"'"))')" \
-    "['$fid2']" "escalated 이월: round 불일치(라운드 1 예약)는 이번 라운드(n-1=2)에 소비되지 않고, 일치하는 것(라운드 2 예약)만 decide 로 올라온다"
-  assert_eq "$(st_yaml "$d" 'sorted(e["finding_id"] for e in st["escalated"])')" "['$fid1']" "escalated 이월: 소비되지 않은 라운드 1 예약은 버려지지 않고 다음으로 이월된다(round 필드 그대로)"
+    "$expected" "escalated 누적: 라운드가 어긋난 예약(라운드 1)도 버려지지 않고 이번 라운드에 소비된다"
+  assert_eq "$(st_yaml "$d" '[(e["finding_id"], e["round"]) for e in st["escalated"]]')" "[('$fid1', 3)]" \
+    "escalated 누적: 이번 라운드(3)에 새로 생긴 예약(아직 자기 차례가 아님)은 소비되지 않고 그대로 남는다"
+  rm -rf "$d"
+}
+
+# escalated dedup — 같은 finding_id 가 두 번 예약돼도 후속은 라운드당 하나(재상승
+# dedup, AC21 과 같은 규칙), 그러나 **같은 라운드의 다른 finding 은 삼키지 않는다**
+# (F-1 재리뷰 — dedup 키는 `finding_id` 다, `round` 가 아니다). **도달성 확인(Task 2
+# 브리프 요구, `case_AC21_reraise_dedup` 이 한 번 no_teeth 로 판정됐던 자리와 같은
+# 종류)** — 유일한 실제 진입점 `docreview_anchor.py cmd_check_intent` 의 `escalate()`
+# 클로저는 그 앞의 가드(`if not fx or fx["state"] not in ("pending", "intent_passed"):
+# return _reject(...)`)를 반드시 지나야 한다. **[F-5 재리뷰 정정]** "escalate 가 한
+# 번 일어나면 다시는 그 가드를 못 지난다"는 예전 서술은 **틀렸다** — `cmd_fix` 의
+# `intent-pass` 분기(`docreview_state.py` 의 `cmd_fix` 안, "intent-pass" 갈래)는 현재 상태를 검사하지 않고
+# `fx["state"] = "intent_passed"` 로 무조건 대입하고, `intent_passed` 는 그 가드의
+# 허용 집합 안이다. 즉 `escalate → intent-pass → escalate` 로 **check-intent 경유의
+# 자연 재예약도 가능하다** — 도달성은 원래 서술보다 더 높다. 그와 별개로 이 파일의
+# 다른 모든 escalated 케이스가 이미 쓰는 저수준 CLI(`docreview_state.py fix --event
+# escalate`)는 애초에 그 가드를 갖지 않는다(현재 상태를 검사하지 않고 매번 그대로
+# append 한다) — 재상승 쪽 dedup(`case_AC21_reraise_dedup`)이 `cmd_decide` 를 완전히
+# 우회하는 전용 픽스처(`st_open_permit.py`)로 도달성을 만든 것과 같은 등급이고,
+# 이쪽은 전용 픽스처조차 필요 없다. 결론은 그대로다(케이스를 쓴다) — 근거만 고쳤다.
+case_escalated_dedup() {
+  local d; d="$(route_r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"
+  local fid fid_other
+  fid="$(fsum "$d" 'AC 가 하나뿐' '["id"]')"
+  fid_other="$(fsum "$d" '부품 경계' '["id"]')"        # F-1 — 같은 라운드의 다른 finding
+  py docreview_state.py fix --state-dir "$d" --id "$fid" --event escalate --reason 'check-intent 거부(1차)' >/dev/null
+  py docreview_state.py fix --state-dir "$d" --id "$fid" --event escalate --reason 'check-intent 거부(2차, 같은 finding_id 재예약)' >/dev/null
+  py docreview_state.py fix --state-dir "$d" --id "$fid_other" --event escalate --reason 'check-intent 거부(같은 라운드, 다른 finding)' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null   # 라운드 2 — 세 예약(round=1) 모두 이번 finalize 대상
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep2.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --doc "$FX/design-sample.md" > "$d/fin.json"
+  # F-1 — dedup 은 finding_id 로 키잉한다. round 로 키잉하면(리뷰의 M8 변이:
+  # `esc_seen.add(e["finding_id"])` → `esc_seen.add(e["round"])`) 세 예약이 모두
+  # round=1 이라 fid_other 가 fid 에 "같은 라운드"라는 이유만으로 삼켜져 이 단언이
+  # 후속 하나(fid_other 없음)만 보고 RED 가 된다.
+  local expected; expected="$(python3 -c 'import sys; print(sorted(sys.argv[1:]))' "$fid" "$fid_other")"
+  assert_eq "$(jget "$d/fin.json" 'sorted(x["supersedes"] for x in d["findings"] if x.get("supersedes") in ("'"$fid"'", "'"$fid_other"'"))')" \
+    "$expected" "escalated dedup: 같은 라운드의 다른 finding 은 삼켜지지 않고 각자 후속을 낸다(키는 finding_id — round 가 아니다)"
+  assert_eq "$(jget "$d/fin.json" 'len([x for x in d["findings"] if x.get("supersedes")=="'"$fid"'"])')" "1" "escalated dedup: 같은 finding_id 가 두 번 예약돼도 후속은 라운드당 하나"
+  # Ruling 22 — 사유 승자를 못 박는다. `st["escalated"]` 는 append-only 라 리스트
+  # 순서 = escalate 된 순서다. 코드가 esc_seen 을 그 순서대로 채우므로 «먼저» 온
+  # 사유(1차)가 남는다 — 최신(2차)이 아니다. 행동은 안 바꾼다, 드러내기만 한다.
+  assert_eq "$(jget "$d/fin.json" 'next(x["evidence"] for x in d["findings"] if x.get("supersedes")=="'"$fid"'")')" \
+    "check-intent 거부(1차)" "escalated dedup: 중복 예약 중 먼저 온 사유가 남는다(최신이 아니다, Ruling 22)"
+  assert_eq "$(jget "$d/fin.json" 'd["adjudication_absorbed"]')" "1" "escalated dedup: 흡수된 중복 하나가 원장에 계수된다(면제가 아니다, F-2/Ruling 21)"
+  assert_eq "$(st_yaml "$d" 'st["escalated"]')" "[]" "escalated dedup: 예약 모두 소비되고(중복은 흡수) 목록이 빈다"
+  rm -rf "$d"
+}
+
+# escalated 미소비 계수 — 대상 finding 이 없는 예약은 버리지 않고 센다(재상승,
+# AC21③ 과 같은 규칙). `st_set_reraise.py` 와 같은 종류의 상태 강제 픽스처
+# (`st_set_escalated.py`)로 대상 finding_id 가 st["findings"] 에 없는 예약을 직접
+# 심는다 — round 는 심을 시점의 현재 라운드를 그대로 쓰므로, next_round 로 한
+# 라운드 넘겨야 그 예약이 "이번 finalize 의 대상"(round < n)이 된다.
+case_escalated_unconsumed_counted() {
+  local d; d="$(route_r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"
+  python3 "$FX/st_set_escalated.py" "$d/docreview-state.md" 'zzzz9999#r1.1'
+  next_round "$d" "$FX/design-sample.md" >/dev/null   # 라운드 2 — round=1 예약이 이번 finalize 대상
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep2.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --doc "$FX/design-sample.md" > "$d/fin.json"
+  # F-7 재리뷰 — 매트릭스 헤더의 요구대로 `.get()` 을 쓴다(값이 사라질 수 있는 변이를
+  # 겨눌 때 엄격 `d["key"]` 인덱싱은 unmeasurable 로 떨어진다). 기대값이 리터럴 "1"
+  # 이라 이 완화는 단언을 약하게 하지 않는다 — 키가 없으면 `.get()` 은 None 을 내고
+  # `None != "1"` 은 여전히 RED 다.
+  assert_eq "$(jget "$d/fin.json" 'd.get("escalated_unconsumed")')" "1" "escalated: 대상 finding 이 없는 예약은 버려지지 않고 계수된다"
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" | jgets 'd["counts"].get("escalated_unconsumed")')" "1" "escalated: 그 계수가 게이트에 실린다"
+  # [Task 3 실행 노트 — Ruling 24] Task 2 가 render_gate 의 계수 줄에 「미소비 상향 예약
+  # %d」를 더했는데(escalated_unconsumed), 그 줄을 게이트 **렌더 본문**에서 재는 락이
+  # 없었다(위 두 단언은 JSON 의 escalated_unconsumed 만 본다). 이 카운터는 GATE_ROWS
+  # 행이 아니다(어떤 상태 하나가 아니라 route 리포트의 집계값이라 행 모델에 안 맞는다)
+  # — Task 3 의 새 가시성 락(test_docreview_gate_visibility.sh)이 행 기반이라 이 줄을
+  # 자연스럽게 흡수하지 못한다. 대신 그 값을 이미 만들어 둔 이 케이스에 렌더 단언
+  # 하나를 더해 갭을 닫는다.
+  assert_grep "$(py docreview_state.py gate --state-dir "$d" --render)" '미소비 상향 예약 1' \
+    "escalated: 그 계수가 게이트 렌더 본문에도 보인다(Ruling 24 — Task 2 가 늘린 줄의 유일한 렌더 커버리지)"
+  rm -rf "$d"
+}
+
+# F-3 재리뷰(Ruling 20) — 누적(`>= n`)이 escalated 예약의 소비 창을 1 라운드에서
+# 무한대로 넓혔다. `_auto_decides` 의 옛 코드는 `prev.get(finding_id)`(finding 이
+# 아직 존재하는가)만 보고 그 fix 의 «지금» 상태는 안 봤다 — 그래서 사용자가 escalate
+# 된 fix 를 나중 라운드에 `drop`(cmd_fix event=drop, 상태 검사 없이 무조건 대입)해도
+# 옛 예약이 여전히 소비 대상으로 남아 몇 라운드가 지나든 반드시 부활했다(리뷰 실측).
+# 형제 재상승 갈래의 `if not d0 or d0.get("state") != "expired": continue` 와 같은
+# 모양으로 「이 fix 가 지금도 escalated 상태인가」를 검사해 막는다.
+case_escalated_dropped_fix_not_resurrected() {
+  local d; d="$(route_r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"
+  local fid; fid="$(fsum "$d" 'AC 가 하나뿐' '["id"]')"
+  py docreview_state.py fix --state-dir "$d" --id "$fid" --event escalate --reason 'check-intent 거부(라운드 1)' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null   # 라운드 2
+  py docreview_state.py fix --state-dir "$d" --id "$fid" --event drop --reason '사용자가 라운드 2 에 drop' >/dev/null
+  next_round "$d" "$FX/design-sample.md" >/dev/null   # 라운드 3 — 옛 예약(round=1)이 이번 finalize 대상
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep3.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --doc "$FX/design-sample.md" > "$d/fin.json"
+  assert_eq "$(jget "$d/fin.json" 'len([x for x in d["findings"] if x.get("supersedes")=="'"$fid"'"])')" "0" \
+    "escalated: drop 된 fix 의 잔존 예약은 decide 로 부활하지 않는다(F-3)"
+  assert_eq "$(st_yaml "$d" 'st["escalated"]')" "[]" "escalated: drop 된 fix 의 잔존 예약도 소비되고(부활 없이) 목록이 빈다"
   rm -rf "$d"
 }
 
@@ -1082,4 +1476,81 @@ case_reraise_successor_immune_to_recritic() {
   assert_eq "$succ_state" "open" "재상승 불변식: 후속의 decides 상태는 open 그대로 — 처분 강제·재비판 reject 어느 것도 안 지났다"
   assert_eq "$(jget "$d/fin.json" 'd["adjudication_held"] >= 1')" "True" "재상승 불변식: 원본 id 를 직접 겨눈 reject 시도(f: 원본id)는 unknown f 로 안전하게 hold 된다(무시되지, 크래시하지 않는다) — same_as 시도(f1→원본id)는 별도 경로(union-find y-not-in-parent 가드)로 가고 hold 가 아니라 coerced 로 잡힌다(Task 7b, 위 주석 참조) — 이 단언은 hold 쪽만 본다"
   rm -rf "$d" "$t" "$rt"
+}
+
+# ── 상태 축의 정본 표 (Task 3) ───────────────────────────────────────────────
+# [Task 3 실행 노트 — 「facts I verified myself」①의 픽스처 증명] `cmd_decide` 의
+# 「보류」는 한 finding id 로 두 원장에 동시에 쓴다 — `decides[fid].state = "held"`
+# 그리고 `asks[fid] = {answered:False, blocks:[], from_decide:True}`(§`cmd_decide`
+# hold 분기). 새 `is_open`/`gate_summary` 는 세 원장을 id 로 각각 훑으므로, 이 교차가
+# `GATE_ROWS` 의 `held_decide` 행과 `ask_open` 행 둘 다에 동시에 걸릴 수 있는 유일한
+# 자리다 — 걸리면 안 된다: `held_decide`(decides, state==held) 는 걸려야 하고
+# `ask_open`(asks, blocks 없고 not from_decide) 은 `from_decide` 배제로 걸리지
+# 않아야 한다(안 그러면 같은 항목이 두 번 렌더된다). 트레이스가 아니라 픽스처로 확인한다.
+case_GR_held_decide_cross_ledger() {
+  local d; d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_DEC]"
+  py docreview_state.py decide --state-dir "$d" --id 'aaaa0001#r1.1' --choice hold --quote '나중에' >/dev/null
+  local g; g="$(py docreview_state.py gate --state-dir "$d")"
+  assert_eq "$(printf '%s' "$g" | jgets 'd["held_decide"], d["ask_open"], d["approval_ready"]')" \
+    "(['aaaa0001#r1.1'], [], True)" "GR: hold 가 심은 ask(from_decide) 는 held_decide 행에만 걸리고 ask_open 행은 배제한다(교차 원장 id 충돌, 이중 렌더 방지)"
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" --render | grep -c 'aaaa0001#r1.1')" "1" \
+    "GR: held_decide 는 게이트 본문에 한 번만 보인다(설계 §8.2 — 승인 게이트가 남은 ask 로 보인다, 한계(a) 해소)"
+  rm -rf "$d"
+}
+
+# [Task 3 실행 노트] 설계 §6.4 한계 (c) — escalated 된 fix 는 오늘 `unapplied_fix` 에도
+# `render_gate` 가 그리는 어떤 목록에도 없어 비차단·비가시였다. `GATE_ROWS` 의
+# `escalated_fix` 행(open=True, blocks=True)이 그 결함을 해소하는지 시나리오
+# 단위로 직접 잰다(가시성 락의 코퍼스-도출 단언과는 별도로 — 그쪽은 모든 행에 대해
+# 기계적으로 도는 일반 단언이고, 이 케이스는 한계(c) 라는 구체적 결함 하나를 사람이
+# 읽는 문맥으로 남긴다).
+case_GR_escalated_fix_blocks_approval() {
+  local d; d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_FIX]"
+  py docreview_state.py fix --state-dir "$d" --id 'bbbb0001#r1.1' --event escalate --reason 'check-intent 거부' >/dev/null
+  local g; g="$(py docreview_state.py gate --state-dir "$d")"
+  assert_eq "$(printf '%s' "$g" | jgets 'd["escalated_fix"], d["approval_ready"]')" \
+    "(['bbbb0001#r1.1'], False)" "GR: escalated fix 는 이제 승인을 막는다(설계 §6.4 한계(c) 해소)"
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" --render | grep -c 'bbbb0001#r1.1')" "1" \
+    "GR: escalated fix 는 게이트 본문에 보인다(한계(c) — 전에는 어떤 목록에도 없었다)"
+  rm -rf "$d"
+}
+
+# [Fix round 1 — I2/Ruling 27] escalated 된 fix 를 벗어나는 프로덕션 전이는 `cmd_fix`
+# 의 `drop`/`intent-pass`/`hold` 뿐이고, 의도된 흐름(escalate → 후속 auto-decide →
+# 채택)은 원본 fix 의 `state` 를 안 건드린다 — 리뷰 실측대로 그대로 두면 한 번 escalate
+# 된 fix 는 `approval_ready` 를 영구히 False 로 묶는다. `drop` 은 상태 가드가 없어
+# (AC23 이 이미 연 탈출구, 이 태스크가 새로 만든 것이 아니다) escalated 에서도 그대로
+# 먹힌다 — 렌더가 그 사실을 실제로 알려주는지와, drop 이 실제로 차단을 푸는지를 함께 잰다.
+case_GR_escalated_fix_drop_clears_block() {
+  local d; d="$(r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"; seed_findings "$d" "[$F_FIX]"
+  py docreview_state.py fix --state-dir "$d" --id 'bbbb0001#r1.1' --event escalate --reason 'check-intent 거부' >/dev/null
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" | jgets 'd["approval_ready"]')" "False" \
+    "GR: escalate 직후엔 승인이 막혀 있다(선결조건)"
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" --render | grep -c 'drop 하면 이 차단이 풀린다')" "1" \
+    "GR: 렌더가 drop 이 탈출구임을 실제로 알려준다(I2 — unapplied_fix 와 같은 모양으로)"
+  py docreview_state.py fix --state-dir "$d" --id 'bbbb0001#r1.1' --event drop --reason '오탐' >/dev/null
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" | jgets 'd["escalated_fix"], d["approval_ready"]')" "([], True)" \
+    "GR: drop 은 escalated 상태에서도 상태 가드 없이 동작해 실제로 차단을 푼다(AC23 탈출구, 새 전이 아니다)"
+  rm -rf "$d"
+}
+
+# [Fix round 1 — M7/Ruling 30] `st["escalated"]` 는 소비되면 빈다(Task 2, round>=n
+# 수명) — `_rg_escalated_fix` 가 그 리스트만 스캔해 사유를 얻던 옛 코드는 소비 뒤
+# 하드코딩 기본값("check-intent 거부")으로 조용히 대체돼, 라운드 1 의 진짜 사유
+# (예: anchor_protected)가 라운드 2 부터 거짓 일반화됐다(리뷰 실측). `escalate_reason`
+# 을 fx 레코드 자신에 남기면(cmd_fix·docreview_anchor.escalate 둘 다) 원장 소비와
+# 무관하게 살아남는지를 실제 finalize 경로로 확인한다.
+case_GR_escalated_fix_reason_persists() {
+  local d; d="$(route_r1 "$PROF_SD/design-doc.md" "$FX/design-sample.md")"
+  local fid; fid="$(fsum "$d" 'AC 가 하나뿐' '["id"]')"
+  py docreview_state.py fix --state-dir "$d" --id "$fid" --event escalate --reason 'anchor_protected' >/dev/null
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" --render | grep -c '사유: anchor_protected')" "1" \
+    "GR: 라운드 1 렌더에 진짜 사유가 실린다(선결조건)"
+  next_round "$d" "$FX/design-sample.md" >/dev/null
+  py docreview_route.py prepare-recritic --state-dir "$d" --critic "$FX/critic-nolayer2.txt" --codex "$FX/codex-failed.yaml" > "$d/prep2.json"
+  py docreview_route.py finalize --state-dir "$d" --recritic "$FX/recritic-missing.txt" --diff "$d/diff2.json" --doc "$FX/design-sample.md" > "$d/fin2.json"
+  assert_eq "$(st_yaml "$d" 'st["escalated"]')" "[]" "GR: finalize 뒤 예약은 소비돼 빈다(원장 쪽 선결조건, M7 이 겨눈 자리)"
+  assert_eq "$(py docreview_state.py gate --state-dir "$d" --render | grep -c '사유: anchor_protected')" "1" \
+    "GR: 라운드 2 렌더에도 같은 진짜 사유가 남는다(M7 — fx 레코드의 escalate_reason 이 원장 소비와 무관)"
+  rm -rf "$d"
 }

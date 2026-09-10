@@ -224,7 +224,7 @@ Step B는 단일 책임 단위입니다: *brief가 완결되면 다음 stage(bra
 가용성.
 
 **이 게이트의 공통 계약(순서 · 두 가드 · 예외 경로)은 `${CLAUDE_PLUGIN_ROOT}/references/proceed-gate.md` 에 있습니다.**
-`reviewing-spec` Phase 5 의 `/compact` proceed 게이트와 **같은 골격**이며, 두 벌을 독립 저술하던
+`reviewing-spec` 의 `/compact` proceed 게이트와 **같은 골격**이며, 두 벌을 독립 저술하던
 것을 그 파일로 모았습니다 — 한쪽만 고치면 다른 쪽이 조용히 갈라지기 때문입니다. Step B 에
 실제로 진입할 때 읽고 그대로 따릅니다. 아래에는 이 skill 의 **어휘**(확정 후보 제시 · 옵션 라벨 ·
 verbatim `/compact` 템플릿 · superpowers 가용성 분기)만 남습니다.

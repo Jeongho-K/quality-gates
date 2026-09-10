@@ -60,18 +60,19 @@ obs_setup "$SCRATCH"
 UNGATED_run_codex_reviewer_sh='quality-pipeline/SKILL.md 이 산문 게이트 — 이 사이클 범위 밖 (설계 §10 미해결 1)'
 UNGATED_run_artifact_codex_reviewer_sh='critiquing-artifacts/SKILL.md 이 산문 게이트 — 이 사이클 범위 밖 (설계 §10 미해결 1)'
 UNGATED_test_codex_json_extraction_sh='수동 spike — 어떤 SKILL도 부르지 않는다'
-# 사유의 귀속: `docreview_route.py`는 critic·codex·recritic 세 원장을 **합치는**
-# 스크립트일 뿐(cmd_prepare/cmd_finalize, `--codex <path>`로 이미 만들어진 yaml을
-# 받는다) — 이 러너를 부르지도, 부를 계획도 없다. 실제 미래 호출자는
-# `shared/docreview/references/reviewing-document.md`를 읽고 따르는 **진입
-# skill**이다(그 reference가 이미 "4. codex — kill switch가 codex를 끄지 않았으면
-# `run_docreview_codex_reviewer.sh <profile> <doc> <project_dir> codex.yaml`"을
-# 산문으로 적어놨다). 그리고 이 ratchet의 게이트 수집(`GATED_RUNNER`, 위)은
-# `find "$ROOT"/plugins/*/skills -name SKILL.md`라 `references/`도 `shared/`도
-# 스캔 밖이다 — 게이트 마커가 SKILL.md 밖(reference)에 놓이면 이 원장은 자동
-# 만료되지 않는다(이 리포에는 「면제 목록은 그 질문을 영구히 닫는다」가 기록된
-# 실패 모드다 — 다음 사람이 손으로 이 줄을 지워야 한다).
-UNGATED_run_docreview_codex_reviewer_sh='호출자 0 — 진입 skill이 아직 이 러너를 안 부른다 (설계 §16 S17·AC25: 1b 는 위험 창이 열리기 전에 모집단만 넓힌다 — 첫 호출자 연결은 이 계획 밖의 이후 작업)'
+# spec-distill 의 옛 design-doc 러너 등재는 여기서 **지웠다**(T7). 등재 사유는 "게이트
+# 마커는 이미 옮겨갔는데 러너 파일이 아직 남아 ratchet 이 RED 를 낸다"였고, T7 이 그
+# 파일을 지우면서 후보 목록에서 빠졌다 — 후보가 사라지면 그 변수는 아무도 읽지 않고
+# 단언도 note 도 나오지 않는다(**이 원장은 그 방향으로는 자동 만료되지 않는다**: 위
+# 헤더의 "목록은 줄어들기만 한다"는 «게이트가 생김» 방향에만 참이다). 그래서 삭제를
+# 손으로 함께 했다 — 남겨두면 조용히 썩는 죽은 코드다.
+# `run_docreview_codex_reviewer.sh`의 등재는 여기서 **지웠다**(2026-09-08). 등재 사유는
+# "호출자 0 — 진입 skill이 아직 이 러너를 안 부른다"였는데, `reviewing-spec`이 문서 리뷰
+# 엔진의 껍데기가 되면서 그 skill의 SKILL.md가 `codex-gate:begin runner=run_docreview_
+# codex_reviewer.sh` 마커 짝으로 이 러너를 부른다 — 위 ratchet이 그 순간 "게이트가
+# 생겼는데 원장에 아직 있다(stale)"로 RED를 냈고, 이 삭제가 그 RED가 지시한 조치다.
+# (등재 당시의 예상대로 자동 만료는 없었다 — 마커가 SKILL.md 안에 놓였으므로 ratchet이
+#  대신 소리를 냈다.)
 ungated_key() { printf 'UNGATED_%s' "$(printf '%s' "$1" | tr '.-' '__')"; }
 
 # ── 마킹된 게이트 블록 수집 ──────────────────────────────────────────────────

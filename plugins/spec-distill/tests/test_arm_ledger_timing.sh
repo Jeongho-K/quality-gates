@@ -148,9 +148,16 @@ else
   note FAIL "T11 실패: rc=$rc11 out='$out11'"
 fi
 
-# --- T12: both-dead fail-safe 라운드는 원장에 기록하지 않는다 ---
-# 두 층으로 잠근다. (a) skill이 keying하는 신호가 merge_review 출력에 실제로 존재하고,
-# (b) SKILL.md의 mark-reviewed 지시가 그 배제 조건과 **같은 섹션 윈도우 안에** 있다.
+# --- T12: 아무도 리뷰하지 않은 라운드는 원장에 기록하지 않는다 ---
+# 두 층으로 잠근다.
+#   (a) `merge_review.py` 가 both-dead 라운드에서 두 degrade flag 를 함께 낸다.
+#       **이 층은 이제 brief 자리 소유다.** 문서 리뷰 엔진 전환(T7) 이후 design doc
+#       자리는 `merge_review.py` 를 부르지 않는다 — 이 스크립트는 `merge_brief_review.py`
+#       가 세 함수를 import 하는 동안만 살아 있고, 그 자리를 전환하는 PR 이 지운다.
+#       그때까지 이 층은 그 스크립트의 계약을 그대로 지킨다.
+#   (b) 껍데기(SKILL.md)의 mark-reviewed 지시가 **엔진 어휘로 쓰인 배제 조건**과
+#       같은 섹션 윈도우 안에 있다. 엔진의 신호는 `fin.json` 의 `blocks` 이고, 그중
+#       이 배제를 부르는 값이 «critic 사망»이다.
 # (a)만으로는 지시가 사라져도 통과하고, (b)만으로는 신호가 사라져 지시가 따를 수 없게
 # 돼도 통과한다.
 printf 'no status line here\n' > "$WORK/claude.txt"
@@ -168,23 +175,38 @@ fi
 # 섹션 윈도우 — 헤더-satisfiable 회피를 위해 blockquote/헤더가 아닌 **본문 고유** 토큰을
 # 윈도우 안에서 찾는다. 빈 윈도우는 앵커가 깨진 것이므로 FAIL(조용한 통과 금지).
 #
-# 맨 토큰 'mark-reviewed' 로는 부족하다 — 같은 윈도우 안 advisory 산문("…리뷰 완료
+# 앵커는 `### mark-reviewed` 절 하나다. 예전 앵커였던 산문 조각 `리뷰 완료 기록` 은
+# 껍데기에서 **그 절의 advisory blockquote 안**에 있어서, 창이 명령 줄보다 뒤에서
+# 열리고 다음 두 절(`check-born`·`clear-inflight`)까지 흘러들었다 — 네 conjunct 가
+# 전부 창 밖이 되어 원인을 잘못 짚는 실패를 냈다. 헤딩으로 열고 **다음 `#` 줄에서
+# 닫아** 창을 그 절로 정확히 한정한다(`awk` 의 `/^## /` 는 `### ` 를 안 닫는다 —
+# 세 번째 글자가 공백이 아니기 때문이다).
+# **다음 편집자 주의**: 닫는 술어가 `/^#/` 라 **줄머리 `#` 로 시작하는 평범한 bash 주석**이
+# 이 절의 펜스 안에 들어오면 창이 거기서 잘린다. 판정은 fail-closed(RED)지만 실패 문면이
+# 「창이 N줄」이라 원인을 잘못 짚게 만든다 — 그 절의 펜스에 주석을 넣어야 하면 줄머리가
+# 아니라 명령 뒤(trailing)로 두거나 이 술어를 함께 좁혀라.
+#
+# 맨 토큰 'mark-reviewed' 로는 부족하다 — 같은 창 안 advisory 산문("…리뷰 완료
 # 기록(mark-reviewed)을 남기지 못했다…")이 그 grep 을 혼자 만족시킨다. 그러면 정작
 # load-bearing 한 명령 줄을 지워도, 다른 섹션으로 옮겨도 GREEN 이라 이 층이 주장하는
 # **공존(co-location)** 을 전혀 재지 못한다. 명령형(`arm_ledger.py" mark-reviewed`)은
 # 그 줄에만 있으므로 body-unique 하다.
+# 배제 조건의 어휘는 **엔진의 것**이다. 옛 두 토큰(`claude_verdict_unrecoverable` ·
+# `codex_degraded`)은 `merge_review.py` 산출물의 키였고 껍데기는 그 스크립트를 부르지
+# 않는다. 오늘 이 배제를 부르는 신호는 `fin.json` 의 `blocks` 에 실린 «critic 사망»이다
+# — 불변식은 그대로이고 신호의 이름만 바뀌었으므로 락을 지우지 않고 토큰을 바꾼다.
 # 네 번째 conjunct — **규칙 문장 자체**를 고정한다. 앞의 세 개는 두 *토큰* 의 공존만
 # 재므로, 근거 산문을 남긴 채 명령형 리드인("예외 — …호출하지 않는다")만 지우면 GREEN
 # 이었다(실측 확인). 그리고 규칙을 무르게 하는 현실적 변경은 정확히 그 모양이다 —
-# 설명은 남기고 명령만 지운다. 이 문장이 없으면 아무도 리뷰하지 않은 both-dead 라운드가
+# 설명은 남기고 명령만 지운다. 이 문장이 없으면 아무도 리뷰하지 않은 라운드가
 # "리뷰됨"으로 원장에 박혀 그 문서는 영영 다시 arm 되지 않는다.
-win="$(awk '/리뷰 완료 기록/{f=1} /^## /{f=0} f' "$SKILL")"
+win="$(awk '/^### mark-reviewed/{f=1; print; next} f && /^#/{f=0} f' "$SKILL")"
 if [[ -n "$win" ]] \
   && grep -qF 'arm_ledger.py" mark-reviewed' <<<"$win" \
-  && grep -q 'claude_verdict_unrecoverable' <<<"$win" \
-  && grep -q 'codex_degraded' <<<"$win" \
+  && grep -qF 'blocks' <<<"$win" \
+  && grep -qF 'critic 사망' <<<"$win" \
   && grep -qF '호출하지 않는다' <<<"$win"; then
-  note PASS "T12b: SKILL Step 3의 mark-reviewed 지시가 both-dead 배제 조건·금지 명령과 같은 블록"
+  note PASS "T12b: SKILL 원장 절의 mark-reviewed 지시가 엔진 어휘의 배제 조건·금지 명령과 같은 블록"
 else
   note FAIL "T12b 실패: window=$(wc -l <<<"$win")줄"
 fi

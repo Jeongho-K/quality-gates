@@ -1,6 +1,6 @@
 # proceed 게이트 — 공통 계약
 
-`conducting-interview` 의 종료 Step B 와 `reviewing-spec` 의 Phase 5 와 `framing-requests` 의
+`conducting-interview` 의 종료 Step B 와 `reviewing-spec` 의 `## 게이트` 절과 `framing-requests` 의
 확정 게이트가 **같은 골격**을 쓴다. 앞의 둘이 독립 저술이던 것을 여기로 모았고 셋째가 그것을
 채택했다 — 한쪽만 고치면 다른 쪽이 조용히 갈라지기 때문이다.
 
@@ -115,8 +115,8 @@ grep 단독은 두 문구의 같은-블록 공존을 보장하지 못한다(두 
 ### 앵커는 각 skill 에 있고, 이 파일은 그 스캔의 코퍼스가 **아니다**
 
 기계적 레이어의 앵커는 **각 skill 의 옵션 ① 서술 블록**에 산다 — `reviewing-spec` 의
-`### Step C — 응답 처리` ① 과 `conducting-interview` 의 `#### B-3` ① 과 `framing-requests` 의
-「호출 모양」 절 옵션 표 ① 이다.
+`## 게이트` 절 옵션 표 ① 행과 그 아래 「① 의 정지 요건」 불릿, `conducting-interview` 의
+`#### B-3` ①, `framing-requests` 의 「호출 모양」 절 옵션 표 ① 이다.
 
 **이 파일은 그 리터럴을 담고 있다** — Step B 표의 ① 행 · 가드 2 본문 · **그리고 바로 이
 「검증」 절 자신**이 그렇다. 계약을 서술하려면 계약의 어휘를 써야 하므로 피할 수 없고,

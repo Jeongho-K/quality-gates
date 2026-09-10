@@ -33,7 +33,7 @@
 # **"codex를 이 감사에서 아예 부를지" 게이트는 호출자(SKILL)·`detect_codex.sh` 책임이다**
 # — 이 러너는 그 kill switch를 읽지 않는다(test_run_audit_codex_reviewer.py가 그
 # 변수명 리터럴 부재를 고정한다). 다만 "웹 검색을 켤지"는 이 러너 **자신**의 결정이다
-# (형제 러너 run_spec_codex_reviewer.sh · run_brief_codex_reviewer.sh와 동형) —
+# (형제 러너 run_brief_codex_reviewer.sh · run_docreview_codex_reviewer.sh와 동형) —
 # `DEVBREW_PLUGIN_AUDIT_DISABLE_WEB`은 아래에서 읽는다(AC21, Task 18).
 #
 # Usage: run_audit_codex_reviewer.sh <axis_question_file> <project_dir> <output_json_path>

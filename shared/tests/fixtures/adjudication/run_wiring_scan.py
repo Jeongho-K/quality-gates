@@ -5,7 +5,8 @@ root = Path(sys.argv[1])
 sys.path.insert(0, str(root / "tools" / "adjudication"))
 from check_wiring import (  # noqa: E402
     EXEMPT, EXEMPT_BASELINE, TERMINAL_CONSUMERS, comprehension_count,
-    derive_consumers, exempt_key, scan, stale_exempt, uncited_exemptions)
+    derive_consumers, exempt_key, scan, stale_exempt, stale_terminal,
+    uncited_exemptions)
 # 인용 실질 판정은 `cite.py` 가 원천이다 — check_wiring 을 경유해 «재수출»
 # 받으면 그 파일에서 쓰이지 않는 별칭이 남아 죽은 import 처럼 보인다.
 from cite import cited  # noqa: E402
@@ -59,3 +60,10 @@ stale = stale_exempt(str(root))
 print("exempt_stale=%d" % len(stale))
 for (rel, line, ident) in stale:
     print("  STALE_EXEMPT %s:%d %s" % (rel, line, ident))
+
+# F-2 재리뷰가 지적한 비대칭의 절반(신선도) — EXEMPT 처럼 TERMINAL_CONSUMERS
+# 도 자기 등재가 여전히 유효한지(파일 존재 + 앵커 없음) 잰다.
+tstale = stale_terminal(str(root))
+print("terminal_stale=%d" % len(tstale))
+for (p, why) in tstale:
+    print("  STALE_TERMINAL %s %s" % (p, why))

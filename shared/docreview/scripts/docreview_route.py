@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent))  # bare .parent — 배포 지점
 from adjudication import Ledger  # noqa: E402
 from docreview_anchor import classify_anchor, refs_of  # noqa: E402
 from docreview_state import (  # noqa: E402
-    RANK, fail, load_profile, load_state, record_findings, save_state, yaml,
+    RANK, _CHOICE_LABEL, _decide_choices_for, _is_reraise_successor,
+    fail, load_profile, load_state, record_findings, save_state, yaml,
 )
 
 BLOCK_RE = r"```%s[ \t]*\n(.*?)\n```"
@@ -165,14 +166,30 @@ def cmd_prepare(a) -> int:
 
 
 # ── finalize ─────────────────────────────────────────────────────────────
-def _decision_view(it, doc):
+def _decision_view(it, doc, st):
+    # [Task 4 fix round 1 — 리뷰 I1 정정] 이 함수는 `_remap_blocks` 를 거쳐
+    # `cmd_finalize` 가 `record_findings` 를 부르기 «전에» 불린다 — 이 라운드의
+    # 어떤 id 도 아직 `st["decides"]` 에 없다(그래서 `decide_choices(st, it["id"])`
+    # 처럼 원장을 조회하는 래퍼는 여기서 못 쓴다, 전부 빈 리스트가 된다). 그러나
+    # **원장을 몰라도 되는 두 사실**을 이미 다른 데서 안다: ① 이 id 는 몇 줄 뒤
+    # `record_findings` 가 무조건 "open" 으로 적는다(§`record_findings`) — 상태를
+    # «지어내는» 게 아니라 곧 쓰일 값을 앞당겨 아는 것이다. ② 승계 여부
+    # (`_is_reraise_successor`)는 전방 포인터가 **바로 앞 줄**
+    # (`_resolve_ids_and_lineage`, 이 함수 호출 직전)에서 이미 원본 레코드에
+    # 찍히므로 지금 계산 가능하다 — 대상은 이 id 자신이 아니라 그 id 를 가리키는
+    # «다른» 레코드라서 이 id 가 원장에 없어도 무관하다. 그래서 원장 래퍼가 아니라
+    # 순수 함수 `_decide_choices_for` 를 직접 쓴다 — 선택지 로직은 여전히
+    # `docreview_state.py` 한 곳뿐이고(`decide_choices`·`_rg_decide`·`_rg_expired`
+    # 와 같은 원본), 이 자리가 `decide_choices` 를 재구현하지 않는다.
+    choices = _decide_choices_for("open", _is_reraise_successor(st, it["id"]))
     nref = None
     if doc and Path(doc).is_file():
         nref = len(refs_of(doc, it["anchor"]))
     basis = it.get("evidence")
     if not basis:
         basis = "finding 없이 바뀜" if it["category"] == "frozen_change" else "(근거 없음)"
-    return {"change": it["summary"], "basis": basis, "alternatives": ["채택(적용)", "기각(원복)", "보류"],
+    return {"change": it["summary"], "basis": basis,
+            "alternatives": [_CHOICE_LABEL[c] for c in choices],
             "impact": "%s · 인용 %s 섹션" % (it["anchor"], nref if nref is not None else "?"),
             "auto": it.get("origin") == "auto"}
 
@@ -361,15 +378,17 @@ def _classify_items(items, st, prof, sections, n, L):
     return final, rejected_items
 
 
-def _auto_decides(a, st, prof, sections, n):
+def _auto_decides(a, st, prof, sections, n, L):
     """사후·이월 auto decide — 얼림 diff(post) · check-intent 거부(pre) · expired 재상승(pre).
 
     `st["escalated"]` 은 아직 자기 차례가 아닌 예약만 남기고, `st["reraise"]` 는 비운다.
-    낸 값은 (새 항목들, 미소비 예약 수).
+    낸 값은 (새 항목들, 미소비 재상승 예약 수, 미소비 escalated 예약 수).
 
     이 함수에 `items` 가 없다는 것이 설계다 — 재상승 후속이 same_as 흡수 · 재비판
     reject · 처분 강제를 지나지 않는다는 불변식이 여기서는 스코프로 보장된다(분해
-    전에는 「이 줄이 그 셋보다 아래에 있다」는 위치로만 보장됐다).
+    전에는 「이 줄이 그 셋보다 아래에 있다」는 위치로만 보장됐다). `L` 은 escalated
+    dedup 흡수 하나만 쓴다(F-2 재리뷰 Ruling 21) — `items` 파이프라인을 통째로 넘기지
+    않으므로 위 불변식은 그대로다.
     """
     extra = []
     if a.diff and Path(a.diff).is_file():
@@ -384,17 +403,51 @@ def _auto_decides(a, st, prof, sections, n):
                           "prev_hash": c.get("old_hash"), "immutable": cls["immutable"], "_source": "diff"})
     prev = st["findings"]
     keep_esc = []
+    esc_seen = {}   # finding_id → 이긴 예약의 라운드(먼저 온 것 — Ruling 22, 최신이 아니다)
+    esc_unconsumed = 0
+    # Task 2 — 형제 재상승(AC21)과 대칭으로 맞춘다. 이전엔 `!= n - 1`(정확히 직전
+    # 라운드의 예약만 소비)이라 `finalize` 가 이 루프 전에 조기 반환한 라운드가 하나라도
+    # 끼면 그 예약의 라운드 번호가 영원히 어긋나 소비도 계수도 안 됐다(escalated 예약
+    # 자체는 사라지지 않았지만 — keep_esc 가 보존한다 — 다음 라운드에도 다시 `!= n-1`
+    # 검사에 걸려 영원히 kept 로만 남았다). `>= n` 은 「이번 라운드 이후에 생긴 예약만
+    # 보류」로 바꿔 그 앞의 예약을 전부 소비 대상으로 삼는다.
     for e in st.get("escalated") or []:
-        if int(e["round"]) != n - 1:
-            keep_esc.append(e)
+        if int(e["round"]) >= n:
+            keep_esc.append(e)   # 이번 라운드 이후에 생긴 예약 — 아직 자기 차례가 아니다
             continue
-        f0 = prev.get(e["finding_id"])
+        fid = e["finding_id"]
+        f0 = prev.get(fid)
         if not f0:
+            esc_unconsumed += 1   # 대상 finding 부재 — 버리지 않고 센다(공시는 게이트가, 재상승과 같은 규칙)
             continue
+        # F-3 재리뷰(Ruling 20) — 형제 재상승(:428, `if not d0 or d0.get("state") != "expired"`)
+        # 과 같은 모양. `f0` 존재만으로는 이 fix 가 «지금도» escalated 상태인지 모른다 —
+        # 예약이 만들어진 뒤 사용자가 drop 하거나(cmd_fix event=drop, 상태 검사 없이
+        # 무조건 대입) intent-pass 로 재시도했을 수 있다(둘 다 `st["fixes"][fid]["state"]`
+        # 를 escalated 밖으로 옮긴다). 누적(`>= n`)이 이 창을 1 라운드에서 무한대로
+        # 넓혔으므로, 지금 상태가 여전히 "escalated" 인 예약만 후속을 낸다 — 아니면
+        # 사용자가 이미 다른 처분을 내린 것이고 그 처분이 의무를 진다(형제와 같은 이유,
+        # 버려지는 새 항목이 없다).
+        fx0 = st["fixes"].get(fid)
+        if not fx0 or fx0.get("state") != "escalated":
+            continue
+        if fid in esc_seen:
+            # 한 계보에 라운드당 후속 하나(재상승 dedup, cmd_observe_diff 와 같은 규칙).
+            # 흡수이지 소실이 아니다 — `esc_seen` 에 먼저 들어간 예약이 바로 아래서
+            # 이미 후속을 만들었다. F-2 재리뷰(Ruling 21) — CLAUDE.md 「흡수(dedup)…
+            # 계수하되 그 자체로 degrade 는 아니다」를 그대로 따라 `L.absorbed` 로
+            # 센다(면제가 아니다). 승자는 항상 먼저 온 예약이다 — `st["escalated"]` 는
+            # append-only 라 리스트 순서가 곧 escalate 된 순서이므로, 라운드가 다른
+            # 사유 둘이 충돌해도 **먼저** 온 사유가 남는다(최신이 아니다) — 행동
+            # 변경 없음, `case_escalated_dedup` 이 이 사실을 단언으로 못 박는다.
+            L.absorbed("escalated:%s#r%d" % (fid, int(e["round"])),
+                      into="escalated:%s#r%d" % (fid, esc_seen[fid]))
+            continue
+        esc_seen[fid] = int(e["round"])
         extra.append({"f": None, "layer": f0["layer"], "category": f0["category"], "anchor": f0["anchor"],
                       "disposition": "decide", "summary": "check-intent 거부 후 상향: " + (f0.get("summary") or ""),
                       "edit_scope": f0.get("edit_scope") or f0["anchor"], "blocks": [],
-                      "supersedes": e["finding_id"], "evidence": e.get("reason"), "origin": "auto",
+                      "supersedes": fid, "evidence": e.get("reason"), "origin": "auto",
                       "kind": "pre", "immutable": bool(f0.get("immutable")), "_source": "escalated"})
     st["escalated"] = keep_esc
     reraise_unconsumed = 0
@@ -414,13 +467,25 @@ def _auto_decides(a, st, prof, sections, n):
         # 없다」와 「대상은 있는데 이미 재결정됐다」를 같은 숫자로 뭉개면 안 된다.
         if not d0 or d0.get("state") != "expired":
             continue          # 사용자가 이미 재결정했다 — 의무는 그 결정이 진다
+        # 후속은 원본의 «성격»을 물려받는다. `pre`(아직 안 한 편집)와 `post`(이미
+        # 일어난 변경의 원복 의무)는 permit 의 종류가 다르고, `post` 만 해시 대조를
+        # 한다 — 하드코딩하면 원복 의무가 「앵커가 닿기만 하면 통과」로 강등된다
+        # (설계 §6.4 알려진 한계 (b)).
+        # [fix round 1 — 리뷰 M3] `d0.get("kind")` 에 `or "pre"` fallback 을 안
+        # 붙인다 — d0 는 위 가드(`if not d0 …`)를 지났으므로 이미 존재하고,
+        # `st["decides"]` 레코드를 만드는 유일한 자리(`record_findings`,
+        # docreview_state.py)가 `"kind": it.get("kind") or "pre"` 로 «기록 시점에»
+        # 이미 강제해 `d0.get("kind")` 는 항상 truthy 다 — 도달 불가능한 자리에
+        # 조용한 기본값을 또 놓으면 CLAUDE.md 「강제는 계수하되 소실이 아니다」를
+        # 어기는 uncounted coercion 이 된다.
         extra.append({"f": None, "layer": f0["layer"], "category": f0["category"], "anchor": f0["anchor"],
                       "disposition": "decide", "summary": "채택 후 미적용(expired): " + (f0.get("summary") or ""),
                       "edit_scope": f0.get("edit_scope") or f0["anchor"], "blocks": [],
                       "supersedes": r["finding_id"], "evidence": r.get("reason"), "origin": "auto",
-                      "kind": "pre", "immutable": bool(f0.get("immutable")), "_source": "reraise"})
+                      "kind": d0.get("kind"), "prev_hash": d0.get("prev_hash"),
+                      "immutable": bool(f0.get("immutable")), "_source": "reraise"})
     st["reraise"] = []
-    return extra, reraise_unconsumed
+    return extra, reraise_unconsumed, esc_unconsumed
 
 
 def _order_key(it):   # 리뷰어 항목은 f 순, 사후 항목은 그 뒤
@@ -514,8 +579,11 @@ def _resolve_ids_and_lineage(st, final, rejected_items, n):
     return bucket_conflicts, lineage_mismatch, revived
 
 
-def _remap_blocks(final, keep_of, doc):
-    """`blocks` 의 f-참조를 흡수 생존자(keep_of)를 거쳐 최종 id 로 바꾸고, decide 에 결정 뷰를 단다."""
+def _remap_blocks(final, keep_of, doc, st):
+    """`blocks` 의 f-참조를 흡수 생존자(keep_of)를 거쳐 최종 id 로 바꾸고, decide 에 결정 뷰를 단다.
+
+    `st` 는 `_decision_view` 가 `_is_reraise_successor` 를 계산하는 데만 쓴다(원장에
+    아직 없는 이 라운드 id 자신은 안 본다 — 위 `_decision_view` 헤더)."""
     f2id = {it["f"]: it["id"] for it in final if it.get("f")}
     for it in final:
         out = []
@@ -525,7 +593,7 @@ def _remap_blocks(final, keep_of, doc):
                 out.append(f2id[r2])
         it["blocks"] = out
         if it["disposition"] == "decide":
-            it["decision_view"] = _decision_view(it, doc)
+            it["decision_view"] = _decision_view(it, doc, st)
 
 
 def _pub(it):
@@ -535,9 +603,9 @@ def _pub(it):
 def _build_report(L, st, n, final, rejected_items, degrade, stats):
     """출력 JSON 을 조립하고 같은 요약을 `st["rounds"][n]["route_report"]` 에 남긴다.
 
-    `stats` 는 앞 단계가 낸 계수 넷(bucket_conflicts · lineage_mismatch · revived ·
-    reraise_unconsumed). 키 순서는 골든(`shared/tests/fixtures/docreview/golden/`)이
-    바이트로 고정하므로 재배열하지 않는다.
+    `stats` 는 앞 단계가 낸 계수 다섯(bucket_conflicts · lineage_mismatch · revived ·
+    reraise_unconsumed · escalated_unconsumed). 키 순서는 골든(`shared/tests/fixtures/
+    docreview/golden/`)이 바이트로 고정하므로 재배열하지 않는다.
     """
     report = L.report()
     adv = list(report["reasons"])
@@ -557,9 +625,16 @@ def _build_report(L, st, n, final, rejected_items, degrade, stats):
         "bucket_conflicts": stats["bucket_conflicts"], "lineage_mismatch": stats["lineage_mismatch"],
         "revived": stats["revived"], "degrade": degrade, "advisory": adv, "blocks": L.blocks(),
         "reraise_unconsumed": stats["reraise_unconsumed"],
+        "escalated_unconsumed": stats["escalated_unconsumed"],
     }
-    for k, v in report["counts"].items():
-        out["adjudication_" + k] = v
+    # 키를 «이름으로» 편다 — `render_disposition.disposition_report()` 의 같은
+    # 결정과 같은 이유다(그 파일 :54-56): `report["counts"]` 를 `.items()` 로
+    # 통째로 넘기면 카운트 이름이 이 파일에 문자열로 한 번도 안 나타나서,
+    # 어휘가 늘어도 이 소비자는 조용하다 — `tools/adjudication/check_consumed.py`
+    # 가 막으려는 바로 그 침묵이다(L2, 리터럴 첨자·튜플 원소만 소비로 센다).
+    for k in ("accepted", "rejected", "held", "absorbed", "coerced",
+              "sources_failed", "suppressed"):
+        out["adjudication_" + k] = report["counts"][k]
     out["adjudication_unknown_counts"] = report["unknown_counts"]
     out["adjudication_degraded"] = report["degraded"]
     out["adjudication_held_by_class"] = L.held_by_class()
@@ -568,6 +643,7 @@ def _build_report(L, st, n, final, rejected_items, degrade, stats):
         "bucket_conflicts": stats["bucket_conflicts"], "revived": len(stats["revived"]),
         "lineage_mismatch": stats["lineage_mismatch"],
         "reraise_unconsumed": stats["reraise_unconsumed"],
+        "escalated_unconsumed": stats["escalated_unconsumed"],
     }
     return out
 
@@ -596,17 +672,18 @@ def cmd_finalize(a) -> int:
     same_as = _apply_recritic(items, verdicts, added, L)
     keep_of = _absorb_same_as(items, same_as, L)
     final, rejected_items = _classify_items(items, st, prof, sections, n, L)
-    extra, reraise_unconsumed = _auto_decides(a, st, prof, sections, n)
+    extra, reraise_unconsumed, escalated_unconsumed = _auto_decides(a, st, prof, sections, n, L)
     final.extend(extra)
     bucket_conflicts, lineage_mismatch, revived = _resolve_ids_and_lineage(st, final, rejected_items, n)
-    _remap_blocks(final, keep_of, a.doc)
+    _remap_blocks(final, keep_of, a.doc, st)
 
     for it in final:
         L.accept(it["id"])
     record_findings(st, final + rejected_items, n)
     out = _build_report(L, st, n, final, rejected_items, degrade,
                         {"bucket_conflicts": bucket_conflicts, "lineage_mismatch": lineage_mismatch,
-                         "revived": revived, "reraise_unconsumed": reraise_unconsumed})
+                         "revived": revived, "reraise_unconsumed": reraise_unconsumed,
+                         "escalated_unconsumed": escalated_unconsumed})
     st["pending_recritic"] = None
     save_state(a.state_dir, st, "finalize (%d findings, %d rejected)" % (len(final), len(rejected_items)))
     print(json.dumps(out, ensure_ascii=False, indent=1))

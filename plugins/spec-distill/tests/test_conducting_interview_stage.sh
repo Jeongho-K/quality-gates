@@ -166,7 +166,8 @@ grep -qE '호출 프롬프트|invocation prompt' <<<"$b3_block" \
   && ok "C5: 규약의 거처가 호출 프롬프트로 명시됨" \
   || no "C5: 규약이 brief에 실리지 않는다는 명시가 없다"
 
-# AC21(i) mechanical only — review layer (ii) coexistence judgment = spec-reviewer persona
+# AC21(i) mechanical only — review layer (ii) 공존 판단은 design 자리 리뷰어(doc-critic
+# + design-doc 프로필)의 몫이고 이 기계적 축의 대상이 아니다
 cc=$(ci_cat | grep -cE "턴 종료|다음 턴"); [[ "$cc" -ge 1 ]] \
   && ok "AC21(i): cross-compact stop wording present (lines=$cc)" \
   || no "AC21(i): cross-compact stop wording absent"

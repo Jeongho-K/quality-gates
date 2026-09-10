@@ -83,7 +83,8 @@ fi
 [[ "$DIFF_PATH" = /* ]] || DIFF_PATH="$PWD/$DIFF_PATH"
 
 # ── stale 재사용 봉쇄 + 완료 전 중단 표시 (리뷰 R2로 강화) ───────────────────
-# 쌍둥이 `run_spec_codex_reviewer.sh`(spec-distill 0.24.14)가 받은 봉쇄를 여기에도
+# 쌍둥이였던 spec-distill 의 design-doc 러너(0.24.14, 그 뒤 문서 리뷰 엔진의
+# `run_docreview_codex_reviewer.sh` 로 흡수)가 받은 봉쇄를 여기에도
 # 넣는다. 백포트가 빠져 있던 동안 이 러너는 SIGTERM/`set -u` abort/OOM/Bash-tool
 # timeout 어느 경로로 죽어도 **이전 iteration의 YAML을 그대로 남겼고**, 오케스트레이터는
 # 그것을 이번 라운드의 codex 판정으로 읽었다 (2026-08-05 재현, exit 143). stale이
@@ -241,7 +242,7 @@ fi
 # (python3 부재, plugin-root 문제)는 `> "$OUTPUT_PATH"` 리다이렉트가 이미 파일을
 # 비운 뒤에 일어난다 → 0바이트 산출물. 소비자에게 그것은 "codex가 성공했고 발견이
 # 없다"로 읽힌다 — 리뷰어 하나가 조용히 사라지는 것이다. 형제 두 러너
-# (run_artifact_codex_reviewer.sh, run_spec_codex_reviewer.sh)는 이 가드를 이미
+# (run_artifact_codex_reviewer.sh, run_brief_codex_reviewer.sh)는 이 가드를 이미
 # 갖고 있었고 주석으로 같은 실패를 지목하고 있었다; 여기에만 백포트되지 않았다.
 # `-s` 검사가 별도로 필요한 이유: exit 0 + 빈 출력이 가능하다(파이프 실패, 부분 쓰기).
 if ! python3 "${PLUGIN_ROOT}/scripts/codex_findings_to_yaml.py" \

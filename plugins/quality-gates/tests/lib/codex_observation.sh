@@ -117,10 +117,6 @@ obs_invoke() {
       PATH="$OBS_MOCKBIN:$PATH" CODEX_CAPTURE_DIR="$capture" CLAUDE_PLUGIN_ROOT="$qg" \
         bash "$cand" "$input" "$OBS_REPO" "$out" >/dev/null 2>&1 || rc=$?
       ;;
-    run_spec_codex_reviewer.sh)
-      PATH="$OBS_MOCKBIN:$PATH" CODEX_CAPTURE_DIR="$capture" CLAUDE_PLUGIN_ROOT="$sd" \
-        bash "$cand" "$input" "$OBS_REPO" "$out" >/dev/null 2>&1 || rc=$?
-      ;;
     run_brief_codex_reviewer.sh)
       PATH="$OBS_MOCKBIN:$PATH" CODEX_CAPTURE_DIR="$capture" CLAUDE_PLUGIN_ROOT="$sd" \
         bash "$cand" direction "$input" "$OBS_REPO" "$out" >/dev/null 2>&1 || rc=$?
@@ -140,14 +136,30 @@ obs_invoke() {
       # 파싱(`PROFILE="${1:-}"; DOC="${2:-}"; PROJECT_DIR="${3:-}"; OUTPUT_PATH="${4:-}"`,
       # shared/docreview/scripts/run_docreview_codex_reviewer.sh)을 그대로 따른다 —
       # 형제 러너들과 인자 개수·순서가 다르다(profile 이 앞에 하나 더 붙는다).
-      # profile 은 frontmatter 정규식이 미매치면 `fm={}`로 안전하게 빠지므로
-      # (같은 파일의 인라인 python 빌더) frontmatter 없는 최소 파일로 충분하다.
+      # **frontmatter 없는 최소 파일로는 더 이상 충분하지 않다**(리뷰 F-5,
+      # test_docreview_codex.sh 회귀). 러너의 stdlib 빌더가 이제 게이트-유도
+      # 불변식을 진다 — `layer1`·`allowed_dispositions` 를 못 읽으면(frontmatter
+      # 부재 포함) "파싱 실패"로 간주해 `sys.exit(1)` 로 loud 하게 죽는다
+      # (shared/docreview/scripts/run_docreview_codex_reviewer.sh 의 게이트-유도
+      # 불변식 절). 예전 주석("frontmatter 정규식이 미매치면 fm={}로 안전하게
+      # 빠지므로 최소 파일로 충분")은 그 옛 조용한 폴백을 전제했는데, 그 폴백이
+      # 정확히 F-5 가 없앤 결함이다 — 이 관측은 "codex 가 실제로 불리는가"만
+      # 재고 프롬프트 «내용»은 안 재므로, 최소한 게이트를 통과할 만큼의
+      # frontmatter 를 준다(정본 `load_profile()` 의 열 필드 전부는 필요 없다 —
+      # 이 러너는 그 검증을 다시 하지 않고 이 셋만 읽는다).
       # 정본이 `shared/`에 있고 두 플러그인 모두에 파일 단위 링크로 배포되므로
       # (`plugins/{quality-gates,spec-distill}/scripts/`) CLAUDE_PLUGIN_ROOT는 둘 중
       # 아무 쪽이어도 무방하다 — prompt-preamble.md·codex_findings_to_yaml.py가
       # 두 플러그인 모두에서 shared/codex/의 같은 대상으로 링크돼 있다.
       local profile; profile="$work/docreview-profile.md"
-      printf 'devbrew observation profile\n' > "$profile"
+      {
+        printf -- '---\n'
+        printf 'layer_rubric:\n  layer1: [observation]\n  layer2: []\n'
+        printf 'allowed_dispositions: [decide, ask]\n'
+        printf 'web: false\n'
+        printf -- '---\n'
+        printf 'devbrew observation profile\n'
+      } > "$profile"
       PATH="$OBS_MOCKBIN:$PATH" CODEX_CAPTURE_DIR="$capture" CLAUDE_PLUGIN_ROOT="$qg" \
         bash "$cand" "$profile" "$input" "$OBS_REPO" "$out" >/dev/null 2>&1 || rc=$?
       ;;

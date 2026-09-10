@@ -16,7 +16,7 @@ design doc auto-review(Layer 2)를 문서 생애 한 번만 발동시킨다.
 기록하므로 그 층이 필요 없다.
 
 CLI:
-  arm_ledger.py mark-reviewed <sid> <raw_path>   # reviewing-spec Step 3 (verdict)
+  arm_ledger.py mark-reviewed <sid> <raw_path>   # reviewing-spec `### mark-reviewed` (진행 선택 뒤)
   arm_ledger.py check-born    <raw_path>         # reviewing-spec approve(①/②)
                                                  #   0=git-tracked, 1=미커밋+advisory, 2=usage
 

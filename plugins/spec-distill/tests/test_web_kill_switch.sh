@@ -85,7 +85,6 @@ else
     case "$1" in
       run_codex_reviewer.sh) echo off ;;
       run_artifact_codex_reviewer.sh) echo off ;;
-      run_spec_codex_reviewer.sh) echo on ;;
       run_brief_codex_reviewer.sh) echo on ;;
       run_audit_codex_reviewer.sh) echo on ;;
       # Task 14 — 억제 축 네 항목은 초안을 원문·레포 CLAUDE.md 하나와만 대조한다
@@ -112,7 +111,7 @@ else
   # 전환 시 쓸 이름을 미리 등록해둔다(지금 죽은 스위치를 만들지는 않는다).
   kill_switch_for() {  # <basename> -> switch var name
     case "$1" in
-      run_spec_codex_reviewer.sh|run_brief_codex_reviewer.sh) echo 'DEVBREW_SPEC_DISTILL_DISABLE_WEB' ;;
+      run_brief_codex_reviewer.sh) echo 'DEVBREW_SPEC_DISTILL_DISABLE_WEB' ;;
       run_audit_codex_reviewer.sh) echo 'DEVBREW_PLUGIN_AUDIT_DISABLE_WEB' ;;
       run_codex_reviewer.sh|run_artifact_codex_reviewer.sh) echo 'DEVBREW_QUALITY_GATES_DISABLE_WEB' ;;
       *) echo '' ;;

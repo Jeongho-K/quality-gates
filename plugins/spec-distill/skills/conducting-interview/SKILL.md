@@ -47,9 +47,7 @@ orchestration:                       # orchestrator 소유, agent read-only
   blind_spot_dispatched: false       # C8 인터뷰당 1회 보장
   coverage_mapper_dispatches: 0      # 상한 2 — R1 첫 질문 전 1 + 재개방 시 ≤1
 non_user_streak: <int>
-rereview_count: 0
 trivia_escape_armed: false
-issue_history: []                    # 각 항목: {id, raised_count, dismissed_by_user, accepted_by_user, reconsensus_count, resolved, escalated}
 user_statements: []                  # 매 round 끝 append. 판정 없음 — 확정은 종료 게이트가 결정.
 confirm_repost_count: 0              # 종료 확정 확인 재제시 횟수 (상한 2, Unbounded-autonomy 가드)
 ---

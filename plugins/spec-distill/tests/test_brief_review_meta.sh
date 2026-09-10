@@ -20,8 +20,11 @@ section() { awk -v pat="$1" '$0 ~ pat {inw=1; next} inw && /^## / {exit} inw' "$
 # "정확히 이 minor"만 표현한다 — 다음 minor bump마다 stale-red가 된다(Task 14 실증,
 # qg 쪽 floor 관용구 test_qg_publish_docs.sh·test_artifact_metadata.sh와 동형화).
 # floor로 전환: 0.26 이상이면 통과, 그 아래면 실패.
-grep -qE '"version": "0\.(2[6-9]|[3-9][0-9])\.[0-9]+"' "$PJ" \
-  && ok "T15: plugin.json >= 0.26.x" || no "T15: plugin.json이 0.26 floor 미만"
+# v1.0.0(문서 리뷰 엔진 첫 호출자 배선)에서 major가 0을 벗어났다 — "0.(26-99)"만
+# 매치하는 옛 정규식은 그 순간부터 항상 RED다. test_readme_sync.sh와 같은 관용구로
+# "major ≥ 1(임의 minor·patch)"를 OR로 더해 위로만 ratchet되게 고쳤다.
+grep -qE '"version": "([1-9][0-9]*)\.[0-9]+\.[0-9]+"|"version": "0\.(2[6-9]|[3-9][0-9])\.[0-9]+"' "$PJ" \
+  && ok "T15: plugin.json >= 0.26.x (major >= 1 포함)" || no "T15: plugin.json이 0.26 floor 미만"
 grep -qE '^## \[0\.24\.0\] — 2026-[0-9]{2}-[0-9]{2}$' "$CL" \
   && ok "T15: CHANGELOG [0.24.0] + ISO 날짜" || no "T15: CHANGELOG [0.24.0] 누락/비-ISO"
 # append-only 누산 — 과거 엔트리 pin은 절대 빼지 않는다.

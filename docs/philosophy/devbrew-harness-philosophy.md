@@ -25,7 +25,7 @@ KEEP-12 — Three Laws를 코드로 집행하는 load-bearing 원칙. 각 엔트
 
 ### P3 — Writer/Reviewer Isolation via Tool Scoping
 **Law 2 집행.** 역할 경계를 프롬프트가 아니라 frontmatter로 만든다 — 리뷰어 agent에는 `Write`/`Edit`이 없고 플래너에는 mutation-Bash가 없다. Load-bearing: "프롬프트를 믿자"에서 "도구가 존재조차 하지 않는다"로 바꾼다 — default-everything(전체 tool 접근) agent는 P3 위반이다.
-코드: `plugins/spec-distill/agents/spec-reviewer.md` · `plugins/quality-gates/agents/security-reviewer.md`
+코드: `shared/docreview/agents/doc-critic.md` · `plugins/quality-gates/agents/security-reviewer.md`
 문서 리뷰 자리 넷(design doc·brief·seed·generic)을 통일하는 엔진은 `shared/docreview/`.
 
 ### P4 — Verification Is Infrastructure
@@ -50,11 +50,11 @@ KEEP-12 — Three Laws를 코드로 집행하는 load-bearing 원칙. 각 엔트
 
 ### P17 — User Sovereignty
 **Law 1 집행.** 위험한·되돌리기 어려운·공유 state에 영향을 주는 액션은 항상 confirmation 게이트를 거친다 — agent는 권고하고 사용자가 결정한다. Load-bearing: 게이트를 skip한 narrate-only 종료는 polite-stop(AP2)이다 — approval gate는 사용자가 *redirect* 가능해야 하고 단순 *acknowledge*가 아니다.
-코드: `plugins/spec-distill/skills/reviewing-spec/SKILL.md` Phase 5 (`AskUserQuestion` proceed gate)
+코드: `plugins/spec-distill/skills/reviewing-spec/SKILL.md` 의 `## 게이트` 절 (`AskUserQuestion` proceed gate)
 
 ### P18 — Stagnation Is a Failure Mode
 **Cross-cutting (L1·L2·L3) 집행.** 같은 것을 계속 재시도하는 루프는 진전이 아니라 멈춘 것 — max-iteration cap + repeat 감지 + escape hatch와 함께 shipping. Load-bearing: 정체 시 재시도 대신 *다른* 접근(fresh subagent·다른 리뷰어·human prompt)을 invoke해야 하고, 카운트가 없는 루프는 토큰을 태우며 신뢰를 깎는다.
-코드: `plugins/spec-distill/skills/reviewing-spec/SKILL.md` (re-review cap 5) · qg Review fix-loop
+코드: `shared/docreview/references/reviewing-document.md` (재리뷰 상한 — 값의 정본 한 줄) · `shared/docreview/scripts/docreview_state.py` 의 `gate_summary`(stagnation 술어) · qg Review fix-loop
 
 ### P21 — Security & Supply Chain
 **Cross-cutting (L1·L2·L3) 집행.** 플러그인=코드, agent=prompt, 둘 다 공격 표면이다 — state secret hygiene, integrity-pin된 plugin-to-plugin trust, description prompt-injection 리뷰가 floor. Load-bearing: kill switch는 보안 컨트롤이라 어떤 훅도 inspect해서 거부할 수 없고, persona 파일을 약화(규칙 제거·임계 완화)하는 PR은 test-suite 편집과 같은 scrutiny의 보안-민감 변경이다.
@@ -70,7 +70,7 @@ KEEP-12 — Three Laws를 코드로 집행하는 load-bearing 원칙. 각 엔트
 
 ### AP3 — Self-Approval (the #1 anti-pattern)
 **Law 2 집행.** 같은 턴이 쓰고 승인하는 것 — Law 2로 엄격히 금지되고 P3 tool-deny로 구조적으로 집행된다. Load-bearing: fresh context가 self-bias anchor를 끊는다 — 같은 context의 reviewer는 자신이 방금 쓴 코드를 *defend*하는 default로 들어가므로, 승인은 다른 agent/다른 skill/최소한 fresh context reviewer로 route해야 한다.
-코드: `plugins/spec-distill/agents/spec-reviewer.md` (Write/Edit deny로 self-approval 구조 차단)
+코드: `shared/docreview/agents/doc-critic.md` (`tools:` allowlist에 Write/Edit이 없어 self-approval 구조 차단)
 
 ## Load-bearing Meta-Rules
 

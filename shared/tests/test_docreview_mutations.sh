@@ -24,8 +24,9 @@
 # `save_state` 를 **리포의 `shared/docreview/scripts/`** 에서 import 한다(각 파일의
 # `SCRIPTS_DIR = …parents[3] / "docreview" / "scripts"`). 매트릭스가 변이시키는 것은
 # 임시 사본이므로, 이 헬퍼들이 픽스처를 «심는» 단계는 어떤 변이도 지나지 않는다.
-# 지금은 무해하다 — 이 헬퍼를 쓰는 세 셀(`reraise_no_dedup`·`reraise_loss_uncounted`·
-# `fwd_pointer_not_cleared`)은 전부 **엔진 술어**를 흔들고 그 술어는 사본에서 돈다.
+# 지금은 무해하다 — 이 헬퍼를 쓰는 네 셀(`reraise_no_dedup`·`reraise_loss_uncounted`·
+# `fwd_pointer_not_cleared`·`escalated_loss_uncounted`[Task 2, `st_set_escalated.py`
+# 를 쓴다])은 전부 **엔진 술어**를 흔들고 그 술어는 사본에서 돈다.
 # 그러나 훗날 상태 **직렬화기 자체**(`load_state`/`save_state`)를 겨눈 셀이 생기면,
 # 이 헬퍼를 쓰는 케이스는 그 변이에 구조적으로 눈이 먼다 — 시딩이 pristine 직렬화기로
 # 되기 때문이다. 그런 셀을 세우려면 먼저 헬퍼가 `$SCRIPTS`(사본)를 보게 바꿔야 한다.
@@ -199,11 +200,24 @@ sed_state()  { sed -i.bak "$1" "$2/docreview_state.py"  && rm -f "$2/docreview_s
 # BEFORE: s/final\.append({"f": None, "layer": 1 if …/  ·  주입부 `final.append(_fc)`
 # AFTER : s/extra\.append({"f": None, "layer": 1 if …/  ·  주입부 `extra.append(_fc)`
 # 겨누는 규칙(사후 얼림 diff 항목이 실제로 decide 가 되는가)은 바뀌지 않았다.
-mut 3/5 freeze_off case_T35_frozen_change_auto_decide sed_route \
+# [Task 4 fix round 1 — 리뷰 I1 이후 정정, 두 겹] 주입부의 `_decision_view(_fc, a.doc)`
+# 호출이 두 인자짜리였다 — I1 이 `_decision_view` 에 `st` 셋째 인자를 더하면서
+# (`_decision_view(it, doc, st)`) 첫 겹은 `TypeError: missing 1 required positional
+# argument: 'st'` 였다(실측) — `_auto_decides` 스코프에 이미 있는 `st` 를 그대로
+# 넘겨 고친다. 둘째 겹은 그 아래: `_decision_view` 본문이 이제
+# `_is_reraise_successor(st, it["id"])` 를 부르는데, 이 주입 지점(`_auto_decides`
+# 안, `_resolve_ids_and_lineage` 가 id 를 매기기 «전»)에서는 `_fc` 에 `"id"` 키가
+# 아직 없다 — 진짜 프로덕션 경로는 `_decision_view` 를 `_remap_blocks` 에서 id
+# 배정 «후»에만 부르므로 이 상태에 닿지 않는다(이 셀의 주입만이 만드는 인공
+# 상태). `_fc["id"]` 를 플레이스홀더로 먼저 채운 뒤 부른다 — `_resolve_ids_and_
+# lineage` 가 뒤에서 어차피 진짜 id 로 덮어쓰므로(`_fc` 도 `final` 의 다른 항목과
+# 똑같이 그 배정을 거친다) 무해하다. 줄이 하나 늘어 churn 은 3/5 → 3/6.
+mut 3/6 freeze_off case_T35_frozen_change_auto_decide sed_route \
   's/extra\.append({"f": None, "layer": 1 if cls\["protected"\] else 2, "category": "frozen_change",/_fc = {"f": None, "layer": 1 if cls["protected"] else 2, "category": "frozen_change",/
 s/"anchor": c\["anchor"\], "disposition": "decide",/"anchor": c["anchor"], "disposition": "fix",/
 s/"prev_hash": c\.get("old_hash"), "immutable": cls\["immutable"\], "_source": "diff"})/"prev_hash": c.get("old_hash"), "immutable": cls["immutable"], "_source": "diff"}\
-            _fc["decision_view"] = _decision_view(_fc, a.doc)\
+            _fc["id"] = "frozen-mut-placeholder"\
+            _fc["decision_view"] = _decision_view(_fc, a.doc, st)\
             extra.append(_fc)/'
 # ② 보호 부류 승격 제거 — fix 가 decide 로 안 올라간다.
 # R19 이전엔 승격 분기 전체를 꺼(`elif False and ...`) `promotion`·`promoted_from` 키 자체가
@@ -299,24 +313,60 @@ mut 1/1 fwd_pointer_not_cleared case_AC20_stale_pointer_cleared_on_reobserve sed
   's/d\.pop("superseded_by", None)   # 이 만료 인스턴스는 끝났다.*/pass/'
 # ⑱ 술어를 역방향 supersedes 스캔으로 복원 — 이 셀이 「전방이냐 역방이냐」의 유일한 변별기다.
 #    앞의 둘은 «막느냐 마느냐» 만 흔들고 방향을 구별하지 않는다.
-mut 1/1 predicate_backward_scan case_AC20_nonobligation_successors_still_block sed_state \
-  's/if d\["state"\] == "expired" and not d\.get("superseded_by")/if d["state"] == "expired" and i not in {f.get("supersedes") for f in st["findings"].values() if f.get("supersedes")}/'
+# [Task 3 재앵커] 원래 이 셀은 `gate_summary` 가 `blocked_expired` 를 직접 열거하던 줄
+# (`if d["state"] == "expired" and not d.get("superseded_by")`)을 겨눴다. Task 3 가
+# 그 열거를 `GATE_ROWS` 표의 `blocked_expired` 행 하나로 옮기면서 그 술어는
+# `lambda r: r["state"] == "expired" and not r.get("superseded_by")` 가 됐는데,
+# `gate_bucket(st, row)` 는 `row.pred(r)` 를 **레코드만** 넘겨 부른다(`i`, 곧 finding
+# id 는 그 술어 서명 안에 없다) — 원래 이 셀이 겨누던 「`i not in {...}` 역방향 스캔」은
+# id 를 요구하므로 행 술어 자리에서는 더 이상 표현할 수 없다(브리프의 `pred(r)` 서명을
+# verbatim 으로 유지한 결과다). 앵커가 사라져 churn 0/0 으로 계측기가 고장 신호를 냈다
+# (실측 — 재앵커 전 전체 스윕에서 이 셀 하나만 RED). 같은 개념(전방 포인터 대 역방향
+# 스캔)을 여전히 잴 수 있는 자리는 `gate_bucket` 자신이다 — id(`i`)와 `st["findings"]`
+# 둘 다 이 함수 스코프에 있다. `blocked_expired` 행일 때만 역방향 스캔으로 바꿔치기해
+# 원래 sed 와 같은 판정식(`i not in {supersedes 타겟들}`)을 재현한다 — 프로덕션
+# `gate_bucket` 은 그대로다(사본에서만 바뀐다, 아래 sed 는 mkclone 된 임시 사본을 겨눈다).
+# churn 은 손으로 5줄 치환(1 삭제/5 추가)으로 도출했지만 실측은 0/4 였다 — 치환문의
+# 마지막 줄(`return sorted(...) if row.pred(r))`)이 원본과 바이트가 같아 diff 의 LCS 가
+# 그 줄을 "안 바뀜"으로 보고 앞 네 줄만 삽입으로 셌다(이 파일의 ⑨ protected_self_only
+# 가 이미 실측한 것과 같은 종류 — 순수 삽입은 실제 diff 기준으로 선언해야 한다). 아래
+# 선언값은 손 도출이 아니라 이 실측을 그대로 반영한다.
+mut 0/4 predicate_backward_scan case_AC20_nonobligation_successors_still_block sed_state \
+  's/return sorted(i for i, r in st\[row\.ledger\]\.items() if row\.pred(r))/if row.name == "blocked_expired":\
+        return sorted(i for i, r in st[row.ledger].items()\
+                      if r["state"] == "expired"\
+                      and i not in {f.get("supersedes") for f in st["findings"].values() if f.get("supersedes")})\
+    return sorted(i for i, r in st[row.ledger].items() if row.pred(r))/'
 
 # ── 만료 재결정 탈출구 (Task 4, AC22) ───────────────────────────────────────
 # ⑲ 탈출구를 되돌린다 → expired 는 다시 열지 않는다(영구 차단, 후속이 끝내 안 생기면
 #    사용자에게 길이 없다).
+# [Task 4(2026-09-08-docreview-design-doc-site) 재앵커] 원래 대상 줄(`cmd_decide` 안의
+# `if d["state"] not in ("open", "expired"):`, bracket 인덱싱)은 §6.4 한계 (a) 가
+# 그 술어를 `decide_choices`(선택지 축의 정본) 하나로 모으면서 사라졌다.
+# [Task 4 fix round 1 — 리뷰 I1 이후 재재앵커] 그 뒤 `.get()` 형태로 한 번 옮겨
+# 살았던 자리(`decide_choices` 안의 `d.get("state") not in (...)`)도 I1 정정이
+# 순수 부분을 `_decide_choices_for(state, is_successor)` 로 마저 가르면서 다시
+# 사라졌다 — 원장 조회(`d.get(...)`)가 아니라 인자로 받은 `state` 를 직접 본다.
+# 재앵커 대상은 그 순수 함수의 첫 줄이다.
 mut 1/1 expired_redecide_refused case_AC22_expired_escape_hatch sed_state \
-  's/if d\["state"\] not in ("open", "expired"):/if d["state"] != "open":/'
+  's/if state not in ("open", "expired"):/if state != "open":/'
 # ⑳ 만료의 「보류」 거부를 지운다 → 보류 한 번에 승인이 열린다(구멍) — 위 BEFORE 재현이
 #    바로 이 변이가 실제로 만드는 상태다.
+# [Task 4 fix round 1 — 리뷰 I1 이후 재재앵커] 같은 이유로 다시 옮겼다. `_decide_
+# choices_for` 의 둘째 가드(`if state == "expired" or is_successor:`)가 지금 「보류
+# 제외」를 정하는 자리인데, 이 셀은 **expired 쪽 절만** 지운다(`or is_successor`
+# 는 남긴다) — 안 그러면 이 셀이 재상승 후속의 보류 거부(㊸ `reraise_successor_
+# hold_allowed` 가 정확히 그쪽을 겨눈다)까지 함께 흔들어 두 결함이 한 셀에 뭉친다.
 mut 1/1 expired_hold_allowed case_AC22_expired_escape_hatch sed_state \
-  's/^    if d\["state"\] == "expired" and a\.choice == "hold":$/    if False:/'
+  's/^    if state == "expired" or is_successor:$/    if is_successor:/'
 # ㉑ 가드를 완전히 연다 — 음의 요구(rejected·held·applied·adopted 네 상태 모두 거부)는
 #    넓히는 변이로만 잰다(좁히는 변이는 이 술어에 닿지 않는다). [리뷰 M5] adopted 는
 #    이미 연 permit 이 관측 대기 중이라 재결정 대상이 아니다(설계 §6.4) — 넷 중 하나만
 #    빠지면 재는 폭이 좁아지므로 네 상태 전부 case 에 있어야 한다.
+# [Task 4 fix round 1 — 리뷰 I1 이후 재재앵커] ⑲와 같은 이유·같은 새 대상 줄.
 mut 1/1 redecide_guard_widened case_AC22_nonexpired_states_still_refused sed_state \
-  's/if d\["state"\] not in ("open", "expired"):/if False:/'
+  's/if state not in ("open", "expired"):/if False:/'
 # ㉒ 재결정이 자기 자신의 낡은 포인터를 지우는 것(설계 §6.4 규칙②, 브리프에 없던 정정 —
 #    Task 3 은 `cmd_observe_diff` 의 관측-시점 pop 하나만 구현했다)을 지운다. 4-space
 #    들여쓰기로 앵커해 `cmd_observe_diff` 의 8-space pop(⑰ 이 잡는 그 줄)과 구별한다 —
@@ -372,12 +422,20 @@ mut 1/1 lineage_two_pass_collapsed case_T14_T15_lineage sed_route \
 #    흡수됨)을 blocks 로 가리키는 실제 흡수-재매핑 경로다.
 mut 1/1 blocks_keep_of_bypassed case_T02_same_as_max sed_route \
   's/r2 = keep_of\.get(r, r)/r2 = r/'
-# ㉙ escalated 이월 제거 — round 불일치(아직 자기 차례가 아닌 예약)를 버려서
+# ㉙ escalated 미도래 예약 소실 — 아직 자기 차례가 아닌 예약(`round >= n`)을 버려서
 #    keep_esc 에 안 남긴다(하향: 「소비되지 않으면 다음으로 넘어간다」가 「소비되지
 #    않으면 사라진다」가 된다). 자연 경로로 이 분기를 밟으려면 finalize 를 건너뛴
 #    라운드가 있어야 한다(AC21 의 reraise 조기-반환과 같은 종류) — 기존 케이스 중
 #    이걸 겨눈 것이 없어 case_escalated_round_mismatch_carries_over 를 새로 썼다.
-mut 1/1 escalated_mismatch_dropped case_escalated_round_mismatch_carries_over sed_route \
+# [Task 2 재앵커] 그 케이스는 `case_escalated_accumulates` 로 이름이 바뀌고 기대값의
+# 뜻이 뒤집혔다(이월 → 누적) — 이 셀이 겨누는 규칙(아직 자기 차례가 아닌 예약을
+# «버리지 않고 보존»하는가)은 조건이 `!= n - 1` 이든 `>= n` 이든 그대로다. sed 대상
+# `keep_esc.append(e)` 도 문자 그대로 살아있다(뒤에 주석만 붙었다) — 케이스 이름만
+# 갱신한다.
+# [F-6 재리뷰 정정] 셀 이름·설명이 옛 `!= n - 1`("불일치") 어휘였다 — `>= n` 아래에서
+# `keep_esc` 가 잡는 것은 "불일치"가 아니라 "아직 자기 차례가 아님"(round ≥ n)이다.
+# 이름·설명을 그 어휘로 고친다. sed 프로그램·판정 대상·churn 은 무변경.
+mut 1/1 escalated_not_due_dropped case_escalated_accumulates sed_route \
   's/keep_esc\.append(e)/pass/'
 # ㉚ bucket 충돌 계수 문턱을 1→2 로 올린다 — 정확히 둘이 충돌하는 실측 사례(T13)의
 #    공시가 0 으로 죽는다(하향: 진짜 충돌인데 안 보인다). `v > 1` 은 파일에 유일.
@@ -416,4 +474,191 @@ s/extra\.append({"f": None,/_leaked = ({"f": None,/
 mut 2/2 same_as_unknown_target_silent case_AC7b_unknown_same_as_target_coerced sed_route \
   's/^                L\.coerced("same_as", x, None)$/                pass/
 s/^                L\.coerced("same_as", y, None)$/                pass/'
+
+# ── escalated 예약 누적·dedup·미소비 계수 (Task 2) — 재상승(AC21, 위 ⑬⑭⑮)과 같은
+# 규칙을 escalated 예약에도 적용한다. 번호는 파일 끝에 이어 붙인다(당겨 채우지
+# 않는다, 위 ⑬ 앞 주석의 관례) — ㉙(escalated_not_due_dropped)이 겨누는 자리(아직
+# 자기 차례가 아닌 예약을 보존하는가)는 이 태스크로도 안 바뀌어 그 자리 그대로
+# 둔다(케이스 이름만 `case_escalated_accumulates` 로 갱신, 위 참조).
+# ㉝ escalated 축적 조건을 옛 규칙(`!= n - 1`)으로 되돌린다 — Task 2 의 핵심 수정을
+#    직접 흔든다. `>= n` → `!= n - 1` 이면 라운드 1 예약(이번 라운드 3 보다 두
+#    라운드 전)이 다시 「직전 라운드가 아니다」로 판정돼 keep_esc 로 이월되고,
+#    case 의 첫 단언(fid1·fid2 둘 다 소비된다)이 fid2 하나만 나와 깨진다.
+mut 1/1 escalated_prev_round_only case_escalated_accumulates sed_route \
+  's/if int(e\["round"\]) >= n:/if int(e["round"]) != n - 1:/'
+# ㉞ escalated dedup(`esc_seen`) 제거 — 같은 finding_id 가 두 번 예약되면 후속도
+#    두 번 생긴다(하향: 라운드당 하나여야 할 후속이 중복된다). 형제 ⑭
+#    (reraise_no_dedup)와 같은 종류·같은 기법(가드를 `if False:` 로 눌러 매번
+#    통과시킨다). [F-2/F-3 재리뷰 재앵커] 상태-생존 검사(F-3, Ruling 20)가 이
+#    가드 위에 끼어들며 그 술어 자체는 문자 그대로 살아있다(`fid` 로 변수화됐을
+#    뿐 — 재리뷰 전엔 `e["finding_id"]` 였다).
+mut 1/1 escalated_no_dedup case_escalated_dedup sed_route \
+  's/^        if fid in esc_seen:$/        if False:/'
+# ㊱ escalated dedup 을 finding_id 대신 round 로 키잉한다(F-1, 리뷰의 M8 재현) —
+#    같은 라운드의 «다른» finding 이 dedup 에 삼켜져 후속 없이 사라진다(하향:
+#    dedup 의 키 축이 뒤바뀐다). 세 자리를 함께 바꿔야 내적 일관성이 깨지지
+#    않는다(`esc_seen` 이 dict — fid 키 하나만 바꾸면 `esc_seen[fid]` 참조가
+#    KeyError 로 크래시해 unmeasurable 로 떨어진다, 수동 확인) — 판정 자리
+#    (`if fid in esc_seen`) · L.absorbed 의 `into=` 조회(`esc_seen[fid]`) · 대입
+#    자리(`esc_seen[fid] = ...`) 셋 다 `int(e["round"])` 로 통일해야 크래시 없이
+#    "라운드로 키잉" 그 자체만 겨눈다.
+mut 3/3 escalated_dedup_keyed_by_round case_escalated_dedup sed_route \
+  's/if fid in esc_seen:/if int(e["round"]) in esc_seen:/
+s/esc_seen\[fid\]))/esc_seen[int(e["round"])]))/
+s/esc_seen\[fid\] = int(e\["round"\])/esc_seen[int(e["round"])] = int(e["round"])/'
+# ㊲ escalated 미소비 계수를 다시 조용히 버린다 — 계수가 0 으로 굳는다(형제 ⑮
+#    reraise_loss_uncounted 와 같은 종류·같은 기법).
+mut 1/1 escalated_loss_uncounted case_escalated_unconsumed_counted sed_route \
+  's/^            esc_unconsumed += 1.*$/            pass/'
+# ㊳ F-3 — fix 가 «지금도» escalated 상태인지 보는 검사를 지운다(Ruling 20). drop
+#    된 fix 의 잔존 예약이 소비 창(누적 이후 무한대)에서 다시 decide 로 부활한다
+#    (하향: 사용자가 이미 처분한 fix 가 다시 승인을 막는다).
+mut 1/1 escalated_fix_liveness_removed case_escalated_dropped_fix_not_resurrected sed_route \
+  's/if not fx0 or fx0\.get("state") != "escalated":/if False:/'
+
+# ── 상태 축의 정본 표 (Task 3) ───────────────────────────────────────────────
+# ㊴ `ask_open` 행의 `from_decide` 배제를 지운다 — `decide --choice hold` 가 심은
+#    ask(교차 원장, 위 case_GR_held_decide_cross_ledger 의 「facts I verified myself
+#    ①」)가 held_decide 행과 함께 ask_open 행에도 걸려 같은 항목이 게이트에 두 번
+#    렌더된다(하향: 이중 표시 — fail-open 은 아니지만 표의 「한 상태 = 한 행」 불변식이
+#    깨진다). churn 은 손으로 한 줄 치환(1 삭제/1 추가)으로 도출했다 — lambda 줄
+#    전체를 갈아 끼우고 뒤 문법(줄바꿈·쉼표)은 안 건드리므로 손 도출과 실측이 갈릴
+#    이유가 없다(⑱ 처럼 치환문이 원본과 바이트가 겹치는 자리가 없다).
+mut 1/1 ask_open_ignores_from_decide case_GR_held_decide_cross_ledger sed_state \
+  's/lambda r: not r\.get("answered") and not r\.get("blocks") and not r\.get("from_decide"),/lambda r: not r.get("answered") and not r.get("blocks"),/'
+# ㊵ `escalated_fix` 행의 `blocks` 를 True→False 로 되돌린다 — 설계 §6.4 한계(c)
+#    (escalate 된 fix 가 비차단) 그 자체로 회귀한다. `approval_ready` 는
+#    `GATE_ROWS` 의 `blocks` 필드에서 도출되므로(`gate_summary`), 이 한 줄이
+#    이 태스크가 실제로 고친 결함의 유일한 스위치다.
+mut 1/1 escalated_fix_no_longer_blocks case_GR_escalated_fix_blocks_approval sed_state \
+  's/lambda r: r\["state"\] == "escalated", True, True, "escalated_fix"/lambda r: r["state"] == "escalated", True, False, "escalated_fix"/'
+
+# ── Fix round 1 (리뷰 대응) ──────────────────────────────────────────────────
+# ㊶ M7 — `cmd_fix` 의 escalate 분기가 fx 레코드에 `escalate_reason` 을 남기는 줄을
+#    지운다. `st["escalated"]` 소비 뒤(라운드 2, finalize 지남) `_rg_escalated_fix`
+#    가 읽을 자리가 없어져 「사유 불명」으로 떨어진다 — 진짜 사유(anchor_protected)가
+#    둘째 라운드부터 조용히 사라지는 회귀(M7 원 결함)를 그대로 재현한다.
+mut 1/1 escalate_reason_not_carried case_GR_escalated_fix_reason_persists sed_state \
+  's/^        fx\["escalate_reason"\] = reason$/        pass/'
+# ㊷ I2 — `_rg_escalated_fix` 의 렌더 문구에서 「drop 하면 이 차단이 풀린다」 힌트를
+#    지운다. 코드(`cmd_fix` 의 drop 분기, 상태 가드 없음)는 그대로라 탈출구 자체는
+#    여전히 동작하지만, 게이트 본문이 그 사실을 다시 감춘다 — I2 가 지적한 「승인이
+#    다시 도달 가능한가를 렌더가 알려주지 않는다」결함으로 되돌린다.
+mut 1/1 escalated_fix_no_drop_hint case_GR_escalated_fix_drop_clears_block sed_state \
+  's/, drop 하면 이 차단이 풀린다)"$/)"/'
+
+# ── 재상승 후속의 「보류」 (Task 4 of 2026-09-08-docreview-design-doc-site,
+#    설계 §6.4 알려진 한계 (a)) ───────────────────────────────────────────────
+# ㊸ 브리프 변이 ①. `_is_reraise_successor` 를 `return False` 로 눌러 「승계된
+#    의무를 진 open」이라는 사실 자체를 지운다 — `decide_choices` 의 둘째 가드가
+#    `d.get("state") == "expired" or False` 로 줄어 재상승 후속도 평범한 open 과
+#    똑같이 「보류」를 받는다(구멍이 다시 열린다, 이 태스크가 닫으려던 바로 그것).
+# churn 은 손으로 도출했다 — sed 가 앵커 줄(`def _is_reraise_successor...:`)을 «그대로
+# 다시 낸 뒤» 새 줄 하나를 끼운다(⑨ protected_self_only 와 같은 기법). diff 의 LCS 는
+# 안 바뀐 앵커 줄을 삽입 지점으로만 보므로 삭제 0·추가 1(1/2 가 아니다) — ⑨ 가 이미
+# 실측으로 확정한 모양이다.
+mut 0/1 reraise_successor_hold_allowed case_AC22b_reraise_successor_hold_refused sed_state \
+  's/^def _is_reraise_successor(st, fid) -> bool:$/def _is_reraise_successor(st, fid) -> bool:\
+    return False  # MUT/'
+# ㊹ 브리프 변이 ②(적응) — [Task 4 fix round 1 — 리뷰 I1 이후 갱신] Task 4 원 라운드
+#    시점엔 `_decision_view` 가 `decide_choices` 를 전혀 안 썼다("되돌릴 것이 없다")
+#    는 것이 사실이었다 — 지금은 아니다: I1 정정이 `_decision_view` 를
+#    `_decide_choices_for`(선택지 로직의 순수 부분, `decide_choices` 가 원장을 읽어
+#    부르는 바로 그 함수)로 잇는다. 그래서 이 셀은 이제 «render_gate 쪽» 결선
+#    하나만 겨눈다 — `_rg_decide` 의 `decide_choices` 호출을 걷어내고
+#    `_decision_view` 와 같은 모양의 상수 목록으로 되돌린다. `_decision_view` 자신의
+#    결선은 아래 ㊺ 이 별도로 겨눈다(둘은 이제 다른 두 자리다).
+mut 1/1 rg_decide_alternatives_hardcoded case_choices_offered_equal_accepted sed_state \
+  's/alternatives = \[_CHOICE_LABEL\[c\] for c in decide_choices(st, fid)\]/alternatives = ["채택(적용)", "기각(원복)", "보류"]/'
+
+# ── Task 4 fix round 1 (리뷰 I1·I2·I3·I4 — §6.4 한계 (a) 재검토) ───────────────
+# ㊺ I1 — `_decision_view` 를 `_decide_choices_for` 에서 다시 끊는다(그 함수는 계산
+#    은 여전히 하지만 결과를 안 쓴다). fin.json 의 decision_view.alternatives 가
+#    재상승 후속에도 다시 상수 셋을 낸다 — 리뷰가 실측으로 잡은 바로 그 채널
+#    (fin.json·state.md·골든)이 다시 샌다. `docreview_route.py` 를 겨눈다(그
+#    파일에만 있는 자리 — `sed_route`).
+mut 1/1 decision_view_unwired case_AC22b_reraise_successor_hold_refused sed_route \
+  's/"alternatives": \[_CHOICE_LABEL\[c\] for c in choices\],/"alternatives": ["채택(적용)", "기각(원복)", "보류"],/'
+# ㊻ I2 — `_is_reraise_successor` 의 대상 특정(`== fid`)을 존재 검사(`is not None`)
+#    로 넓힌다. state 안 «어딘가»에 승계 포인터가 하나라도 있으면 «그 id 와 무관한»
+#    모든 open decide 가 재상승 후속 취급을 받아 「보류」를 잃는다 — 이 태스크가
+#    닫으려던 결함의 거울상(대상이 없어서 넓어지는 대신, 대상이 있어도 좁아지지
+#    않는 방향으로 과대 적용). `case_choices_offered_equal_accepted` 의 I2 양성
+#    짝(재상승 사슬과 공존하는 무관한 open 의 「보류」가 성공해야 한다)만이 이
+#    축을 잰다 — choices_match 두 단언은 양쪽이 같은 `decide_choices` 에서 나와
+#    이 변이 아래서도 서로 계속 같다(순환, 리뷰의 핵심 지적).
+mut 1/1 reraise_successor_overbroad_targeting case_choices_offered_equal_accepted sed_state \
+  's/return any(d\.get("superseded_by") == fid for d in st\["decides"\]\.values())/return any(d.get("superseded_by") is not None for d in st["decides"].values())/'
+# ㊼ I3① — 새 사유 리터럴을 옛 사유 리터럴로 무너뜨린다("만료라서 못 한다"와
+#    "승계 의무를 지고 있어서 못 한다"가 같은 문자열이 된다). `case_AC22b_
+#    reraise_successor_hold_refused` 의 사유 단언(이 fix round 가 새로 더했다,
+#    Ruling 32 — 전엔 JSON 을 버렸다)만이 이 축을 잰다.
+mut 1/1 reraise_reason_collapsed_into_expired case_AC22b_reraise_successor_hold_refused sed_state \
+  's/return fail("decide_hold_not_allowed_for_reraise_successor", id=a\.id)/return fail("decide_hold_not_allowed_for_expired", id=a.id)/'
+# ㊽ I3② — 「보존한다」던 두 리터럴(`decide_not_open`·`decide_hold_not_allowed_for_
+#    expired`)을 함께 개명한다. 브리프의 전제("기존 케이스가 그 문자열을 재고
+#    있다")가 거짓이었다는 리뷰의 지적(Ruling 32) 그대로 — 이 라운드 전엔 실제로
+#    아무 락도 이 둘을 안 쟀다. `case_decide_reason_literals_not_open_and_expired`
+#    가 새로 잰다. 두 곳을 한 sed 로 함께 개명한다(같은 결함의 두 절반).
+mut 2/2 decide_reason_literals_renamed case_decide_reason_literals_not_open_and_expired sed_state \
+  's/fail("decide_not_open", id=a\.id, state=d\["state"\])/fail("MUT_not_open_reason", id=a.id, state=d["state"])/
+s/fail("decide_hold_not_allowed_for_expired", id=a\.id)/fail("MUT_expired_reason", id=a.id)/'
+# ㊾ I4 — `_rg_expired` 를 `decide_choices` 에서 다시 끊고 옛 하드코딩(리뷰가 실제로
+#    보인 깨진 모양, 「보류」까지 낸다)으로 되돌린다. `choices_match_expired` 단언
+#    (이 fix round 가 새로 더했다)만이 이 축을 잰다 — `dc_choices "$blocked"` 는
+#    `decide_choices` 자체를 부르므로 렌더가 갈려도 못 본다(같은 순환 지적, I2 와
+#    같은 종류).
+mut 1/1 rg_expired_unwired_and_offers_hold case_choices_offered_equal_accepted sed_state \
+  's/alt = " \/ "\.join(_CHOICE_LABEL\[c\] for c in decide_choices(st, fid))/alt = "채택 \/ 기각 \/ 보류"/'
+
+# ── 재상승 후속의 kind·prev_hash 승계 (Task 5, 2026-09-08-docreview-design-doc-site,
+#    설계 §6.4 알려진 한계 (b)) ── 표준 원 숫자(①…㊾)는 지난 태스크들에서 이미
+#    ㊾(49)까지 다 썼다 — 이 유니코드 블록의 마지막 글자는 ㊿(50) 하나뿐이라
+#    넷 중 첫째만 원 숫자를 받고 나머지 셋은 (51)·(52)·(53) 으로 이어 붙인다.
+#
+# ㊿ 재상승 후속의 kind 승계를 하드코딩 "pre" 로 되돌린다 — 원본이 post(얼림 diff
+#    가 만든 사후 결정, 기각으로 원복 permit 이 열렸다가 미관측 만료)였는데 후속이
+#    다시 "pre" 로 태어난다(§6.4 한계 (b) 그 자체 — 되돌리지 않은 얼림 위반의
+#    「채택」이 해시 대조 없는 apply permit 을 열어 그대로 승인된다).
+#    `case_AC22c_reraise_inherits_post_kind` 만이 이 축을 잰다 — [fix round 1] 이
+#    케이스가 이제 셋(kind · 후속 자신의 렌더 꼬리 · 「채택 → 즉시 applied」)이라
+#    셋 다 이 변이 하나로 무너진다(cmd_decide 의 post 분기 자체가 안 타고,
+#    `_post_kind_notice` 도 kind!="post" 라 빈 문자열을 낸다) — 실측 RED(3).
+mut 1/1 reraise_kind_hardcoded_pre case_AC22c_reraise_inherits_post_kind sed_route \
+  's/"kind": d0\.get("kind"), "prev_hash": d0\.get("prev_hash"),/"kind": "pre", "prev_hash": d0.get("prev_hash"),/'
+# (51) prev_hash 승계만 지운다(kind 승계는 그대로 둔다) — 후속이 post 로는 태어나되
+#    원복 대상 해시를 잃는다. `case_AC22c_reraise_inherits_prev_hash` 만이 이 축을
+#    잰다 — [fix round 1 — 리뷰 M1] 그 케이스 첫 단언(공허성 바닥, 원본 prev_hash 가
+#    실제 hex 모양인지)은 이 변이가 안 건드리는 값이라 계속 GREEN, 둘째(등식)만
+#    RED — 실측 RED(1) 생존(1). kind 는 안 건드렸으므로
+#    `case_AC22c_reraise_inherits_post_kind` 의 세 단언은 이 변이에서 여전히
+#    GREEN 이다(두 변이가 서로 가리지 않도록 브리프가 요구한 분리, Step 3).
+mut 1/1 reraise_prev_hash_dropped case_AC22c_reraise_inherits_prev_hash sed_route \
+  's/"kind": d0\.get("kind"), "prev_hash": d0\.get("prev_hash"),/"kind": d0.get("kind"),/'
+# (52) 반대 방향 회귀 — kind 승계를 무조건 "post" 로 강제한다("pre" 원본까지도
+#    "post" 로 과대 일반화). 브리프의 두 변이는 post 원본만 겨눴다 — `d0.get(
+#    "kind")` 는 양방향 값을 다루는 식이라 이 반대쪽 실패 모드를
+#    `case_AC22c_reraise_preserves_pre_kind` 가 새로 잰다. [fix round 1 — 리뷰 I2
+#    정정] 이 케이스가 이 방향을 «처음 잡는» 락은 아니다 — 같은 변이가
+#    `test_docreview_golden.sh`(case_T22 후속의 kind 가 pre→post 로 갈려 fin.json·
+#    state.md 둘 다 어긋난다)와 `case_AC20_reexpiry_blocks_again`(post 후속은 채택
+#    즉시 applied 라 그 케이스가 기대하는 재만료 자체가 안 일어나 RED(2))도 함께
+#    무너뜨린다. 이 케이스가 유일하게 갖는 것은 **귀속**이다 — 골든 diff 도 AC20③
+#    의 실패 메시지도 `kind` 를 한 글자도 언급하지 않는데, 이 셀만 `kind` 단언을
+#    직접 겨눈다. 위험한 이유: "post" 로 잘못 태어나면 「채택」이 permit 없이
+#    즉시 applied 로 끝나(`cmd_decide` 의 post 분기) 「그 편집이 실제로
+#    관측됐는가」를 검증하는 pre 의 정상 계약을 건너뛴다.
+mut 1/1 reraise_kind_hardcoded_post case_AC22c_reraise_preserves_pre_kind sed_route \
+  's/"kind": d0\.get("kind"), "prev_hash": d0\.get("prev_hash"),/"kind": "post", "prev_hash": d0.get("prev_hash"),/'
+# (53) [fix round 1 — 리뷰 I1] `_rg_decide` 에서 사후 고지 꼬리 호출(`_post_kind_
+#    notice(d)`)을 빼 원판(꼬리가 `_rg_expired` 에만 있던 상태)으로 되돌린다 —
+#    이 셀이 겨누는 것은 배선이다: 리터럴 자체가 죽는 축은 기존 ㊾ 이웃의
+#    `post_tail_removed`(`_rg_expired`·`case_AC22_post_expiry_render_tail` 짝)가
+#    이미 재고, 여기는 `_rg_decide` 가 그 헬퍼를 «부르는지» 를 잰다 — 헬퍼가
+#    멀쩡해도 호출이 빠지면 재상승 후속이 open_decide 로 렌더되는 동안은 여전히
+#    안 보인다(이 태스크가 닫으려던 바로 그 결함의 재발 형태).
+#    `case_AC22c_reraise_inherits_post_kind` 의 렌더 꼬리 단언만 RED — kind·
+#    즉시-applied 단언은 렌더 텍스트와 무관해 생존한다(실측 RED(1) 생존(2)).
+mut 1/1 rg_decide_post_tail_unwired case_AC22c_reraise_inherits_post_kind sed_state \
+  's/"\[decide%s\] %s — %s%s" % (" auto" if dv\.get("auto") else "", fid, f\.get("summary"), _post_kind_notice(d)),/"[decide%s] %s — %s" % (" auto" if dv.get("auto") else "", fid, f.get("summary")),/'
 finish

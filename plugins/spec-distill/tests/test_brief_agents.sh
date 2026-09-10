@@ -158,8 +158,7 @@ done
 # 결함: `brief-critic-issues` 펜스명과 `**Status:**`는 merge_brief_review.py가 리터럴로
 # 핀하는데 agent 파일 쪽에는 아무 assert가 없었다 — 생산자에서 rename하면 10개 스위트가
 # 전부 green인 채로 매 라운드 critic_verdict=None + malformed → 영구 needs_revise →
-# cap에서 강제 escalate가 난다(테스트 신호 0). 형제 agent엔 이 락이 이미 있다
-# (test_spec_reviewer_design_checklist.sh). 리터럴을 여기 박지 않고 **소비자 코드에서
+# cap에서 강제 escalate가 난다(테스트 신호 0). 리터럴을 여기 박지 않고 **소비자 코드에서
 # 추출**해 대조한다 — 어느 쪽에서 rename해도 red가 되도록.
 MERGE_PY="$SD/scripts/merge_brief_review.py"
 SENTINEL_LIT="$(grep -oE '```brief-[a-z-]+' "$MERGE_PY" | head -1 | sed 's/^```//')"

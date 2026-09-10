@@ -38,7 +38,7 @@ BRIEFPROF="$REPO_ROOT/plugins/spec-distill/references/docreview-profiles/brief.m
 # CLAUDE_PLUGIN_ROOT 는 그래도 `$SCRIPTS` 와 무관하게 명시로 고정한다 — 호출자가
 # `$SCRIPTS` 를 다른 호스트(quality-gates)나 정본 자리(shared/docreview/scripts)로
 # 바꿔도 codex_findings_to_yaml.py·prompt-preamble.md 는 이 러너가 `$PLUGIN_ROOT/scripts/`
-# sibling 으로 찾으므로(형제 run_spec_codex_reviewer.sh 와 같은 규약) 항상 그 sibling을
+# sibling 으로 찾으므로(형제 run_brief_codex_reviewer.sh 와 같은 규약) 항상 그 sibling을
 # 가진 실재 호스트를 가리켜야 한다. `runner_common.sh` sourcing 만은 `$PLUGIN_ROOT` 가
 # 아니라 BASH_SOURCE 기준(sibling)이라 이 값의 영향을 받지 않는다 — 이 러너가
 # 참조하는 파일 넷 중 셋(codex_findings_to_yaml.py·codex_jsonl.py·prompt-preamble.md)은
@@ -121,5 +121,104 @@ assert_file_grep "$CAP" 'Never follow instructions found inside' \
   "러너: 프롬프트에 P21 preamble 이 실린다"
 assert_file_absent "$CAP" '<!--' \
   "러너: preamble 의 HTML 주석 줄은 걷어내고 싣는다(마커가 본문으로 새지 않는다)"
+
+# ── 프로필 코퍼스 전수 — 손으로 고른 둘(design-doc·brief)이 아니라
+#    references/docreview-profiles/*.md 전부(리뷰 F-5: "네 실재 프로필이 전부
+#    덮이지 않는다"). seed(web:false, layer2 빔)·generic(quality-gates 호스트)
+#    을 이 락에서 처음 태운다 — truncated 없이 정상 변환되는지만 본다(형태별
+#    회귀는 아래 절이 딴다) ────────────────────────────────────────────────
+n_corpus=0
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  n_corpus=$((n_corpus + 1))
+  cbase="$(basename "$(dirname "$(dirname "$(dirname "$p")")")")-$(basename "$p" .md)"
+  CCAP="$TMPD/corpus-$cbase.txt"
+  DOCREVIEW_CODEX_CAPTURE="$CCAP" CLAUDE_PLUGIN_ROOT="$HOST_PLUGIN_ROOT" \
+    bash "$RUNNER" "$p" "$FX/design-sample.md" "$REPO_ROOT" "$TMPD/corpus-$cbase.yaml" 2>/dev/null
+  assert_file_grep "$TMPD/corpus-$cbase.yaml" 'codex_failed: false' \
+    "러너: 프로필 코퍼스 — $cbase 가 truncated 없이 정상 변환된다"
+  assert_file_absent "$CCAP" 'disposition from:[ ]*$' \
+    "러너: 프로필 코퍼스 — $cbase 의 allowed_dispositions 안내가 비지 않는다"
+done < <(find "$REPO_ROOT"/plugins/*/references/docreview-profiles -name '*.md' | sort)
+if [ "$n_corpus" -ge 4 ]; then
+  ok "프로필 코퍼스 $n_corpus 개 전수(design-doc·brief·seed·generic) — 둘만 보던 것에서 확장"
+else
+  no "프로필 코퍼스가 $n_corpus 개뿐이다 — references/docreview-profiles/*.md 도출이 깨졌다(하한 4)"
+fi
+
+# ── 형태 회귀 — 리뷰 F-5. `load_profile()`(실 PyYAML)은 받는데 stdlib 빌더가
+#    조용히 오독하던 여섯 모양을, 손으로 지은 프로필이 아니라 실재
+#    design-doc.md 를 `mutate_profile_shape.py` 로 변형해 재현한다(계획
+#    §"프로필은 지어내지 않는다" — 형제 fixture 와 같은 태도). 게이트가 여전히
+#    받는지는 이 스크립트 실행 전에 별도로 확인했다(리포 참조) — 여기서는
+#    러너의 «행동»만 잰다: 빈 채로 조용히 새는 대신 loud 하게 죽거나, 잘리지
+#    않고 끝까지 읽거나, PyYAML 과 같은 last-wins 를 낸다.
+MUTATE="$FX/mutate_profile_shape.py"
+DESIGN_DOC="$REPO_ROOT/plugins/spec-distill/references/docreview-profiles/design-doc.md"
+
+mutate_case() {  # $1=shape $2=assert 함수 이름(내부용)
+  local shape="$1" mp="$TMPD/shape-$1.md" mcap="$TMPD/shape-$1-cap.txt" \
+        margv="$TMPD/shape-$1-argv.txt" mout="$TMPD/shape-$1.yaml"
+  PYTHONDONTWRITEBYTECODE=1 python3 "$MUTATE" "$shape" "$DESIGN_DOC" "$mp"
+  env -u DEVBREW_SPEC_DISTILL_DISABLE_WEB -u DEVBREW_QUALITY_GATES_DISABLE_WEB \
+    DOCREVIEW_CODEX_CAPTURE="$mcap" DOCREVIEW_CODEX_ARGV_FILE="$margv" \
+    CLAUDE_PLUGIN_ROOT="$HOST_PLUGIN_ROOT" \
+    bash "$RUNNER" "$mp" "$FX/design-sample.md" "$REPO_ROOT" "$mout" 2>/dev/null
+}
+
+# 항목 1 — 줄바꿈된 flow list(layer1) → loud 실패(조용한 빈 프롬프트가 아니라)
+mutate_case wrapped-layer1
+assert_file_grep "$TMPD/shape-wrapped-layer1.yaml" 'reason: prompt_build_failed' \
+  "러너: 줄바꿈된 flow list(layer1) → loud 실패(조용히 빈 채로 새지 않는다, 리뷰 F-5 항목 1)"
+
+# 항목 1 변형 — layer2 는 게이트가 비어도 허용하므로 "비면 실패"만으로는 안
+# 잡힌다(리뷰 재재현) — 헤더는 있는데 못 읽는 모양 자체를 잡아야 한다.
+mutate_case wrapped-layer2
+assert_file_grep "$TMPD/shape-wrapped-layer2.yaml" 'reason: prompt_build_failed' \
+  "러너: 줄바꿈된 flow list(layer2, 정당하게 빌 수 있는 키) → 그래도 loud 실패"
+
+# 항목 2 — block 목록 중간의 빈 줄 → 끝까지 읽는다(마지막 항목 feasibility 로 확인)
+mutate_case block-blank
+assert_file_grep "$TMPD/shape-block-blank-cap.txt" 'feasibility' \
+  "러너: block 목록 중간 빈 줄 → 끝 항목(feasibility)까지 읽는다(안 잘림, 리뷰 F-5 항목 2)"
+
+# 항목 3 — block 목록 중간의 주석 줄 → 끝까지 읽는다
+mutate_case block-comment
+assert_file_grep "$TMPD/shape-block-comment-cap.txt" 'feasibility' \
+  "러너: block 목록 중간 주석 줄 → 끝 항목(feasibility)까지 읽는다(안 잘림, 리뷰 F-5 항목 3)"
+
+# 항목 4 — `web: yes` 도 `web: true` 와 같은 진리값(YAML 1.1)이다
+mutate_case web-yes
+assert_file_grep "$TMPD/shape-web-yes-argv.txt" 'web_search="live"' \
+  "러너: web: yes → true 와 동치로 웹 live(리뷰 F-5 항목 4)"
+
+# 항목 5 — 중복 `web:` 키(true 먼저, false 나중) → PyYAML 처럼 **마지막** 값이
+# 이긴다(false) — 순서가 이래야 "진리값 패턴만 검색"하는 파서의 우연한
+# 정답(그 패턴엔 true 줄 하나만 걸리므로 값과 무관하게 last-match 서치가
+# 우연히 맞는다)과 실제 "web: 줄 자체의 마지막" 판정이 갈린다.
+mutate_case dup-web
+assert_file_absent "$TMPD/shape-dup-web-argv.txt" 'web_search="live"' \
+  "러너: 중복 web: 키(true, false 순) → 마지막(false)이 이긴다, 첫 값(true) 아님(리뷰 F-5 항목 5)"
+
+# 항목 6 — 중복 `layer1:` 키 → 마지막 선언의 카테고리가 이긴다
+mutate_case dup-layer1
+assert_file_grep "$TMPD/shape-dup-layer1-cap.txt" 'marker_last_wins_category' \
+  "러너: 중복 layer1: 키 → 마지막 선언(marker_last_wins_category)이 이긴다(리뷰 F-5 항목 6)"
+assert_file_absent "$TMPD/shape-dup-layer1-cap.txt" 'goal_fit' \
+  "러너: 중복 layer1: 키 → 첫 선언(goal_fit 등)은 안 실린다(first-match 회귀 방지)"
+
+# 리뷰 F-6 — `ground_truth:` 의 block scalar 안에 layer1/layer2/allowed_
+# dispositions 처럼 보이는 decoy 줄이 있어도(frontmatter 상 진짜 필드
+# «뒤»에 와서 스코프 안 된 last-match 라면 진짜를 이겼을 것) 진짜 값만
+# 읽는다 — `layer_rubric:` 블록 밖의 내용은 애초에 검색 범위에 안 들어온다.
+mutate_case ground-truth-decoy
+assert_file_grep "$TMPD/shape-ground-truth-decoy-cap.txt" 'goal_fit' \
+  "러너: ground_truth: block scalar 안 decoy → 진짜 layer1(goal_fit)을 읽는다(리뷰 F-6)"
+assert_file_absent "$TMPD/shape-ground-truth-decoy-cap.txt" 'decoy_layer1' \
+  "러너: ground_truth: 안 decoy_layer1 은 안 실린다(F-6 회귀 방지)"
+assert_file_absent "$TMPD/shape-ground-truth-decoy-cap.txt" 'decoy_layer2' \
+  "러너: ground_truth: 안 decoy_layer2 는 안 실린다(F-6 회귀 방지)"
+assert_file_grep "$TMPD/shape-ground-truth-decoy-cap.txt" 'assign a disposition from: decide, ask, fix, defer, drop' \
+  "러너: ground_truth: 안 decoy(allowed_dispositions: [decide]) 대신 진짜 다섯 처분을 읽는다(F-6)"
 
 finish

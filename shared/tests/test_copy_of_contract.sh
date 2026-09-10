@@ -368,16 +368,44 @@ while IFS= read -r canonical; do
 
   # 구조 도출 — 인덱스와 워킹트리를 **따로** 구한다. 아래에서 둘이 갈라졌는지 본다:
   # untrack 은 인덱스에서만 지우므로 워킹트리 쪽이 남아 두 수가 갈라진다.
-  idx_plugins="$(git ls-files -- "plugins/*/scripts/$base" 2>/dev/null \
-                  | sed -nE 's#^plugins/([^/]+)/.*#\1#p' | sort -u)"
-  wt_plugins="$(for _p in plugins/*/scripts/"$base"; do
-                  { [ -e "$_p" ] || [ -L "$_p" ]; } && printf '%s\n' "$_p"
+  #
+  # 〔2026-09-08 PR2 Task1〕 배포 디렉토리는 셋이다 — scripts(실행·source) · agents(사본,
+  # copy-of) · references(절차서, 링크). agent 는 사본이라 축 1a 의 정본 목록에 안 들지만,
+  # 미래에 링크로 배포되는 것이 생겨도 조용히 빠지지 않게 세 디렉토리를 **한 곳에서**
+  # 열거하고 둘 다 그 목록을 돈다(열거가 두 벌이면 다음 저자가 한쪽만 고친다, 설계 §5.1).
+  DEPLOY_DIRS="scripts agents references"
+  idx_plugins="$(for _d in $DEPLOY_DIRS; do
+                   git ls-files -- "plugins/*/$_d/$base" 2>/dev/null
+                 done | sed -nE 's#^plugins/([^/]+)/.*#\1#p' | sort -u)"
+  wt_plugins="$(for _d in $DEPLOY_DIRS; do
+                  for _p in plugins/*/"$_d"/"$base"; do
+                    { [ -e "$_p" ] || [ -L "$_p" ]; } && printf '%s\n' "$_p"
+                  done
                 done 2>/dev/null | sed -nE 's#^plugins/([^/]+)/.*#\1#p' | sort -u)"
   structural_plugins="$(printf '%s\n%s\n' "$idx_plugins" "$wt_plugins" | grep -v '^$' | sort -u || true)"
 
-  # 산문 도출 — 실제 호출 패턴(scripts/<basename>)을 참조하는 파일. 배포
-  # 지점 자기 자신(plugins/*/scripts/<basename>)은 도출 대상에서 제외한다 —
-  # 그러지 않으면 배포 지점 자신이 스스로를 참조원으로 세어 도출이 순환한다.
+  # 산문 도출 — 실제 호출/참조 패턴((scripts|agents|references)/<basename>)을
+  # 참조하는 파일. 배포 지점 자기 자신은 도출 대상에서 제외한다 — 그러지 않으면
+  # 배포 지점 자신이 스스로를 참조원으로 세어 도출이 순환한다.
+  #
+  # 〔2026-09-08 PR2 Task1〕 패턴을 `scripts/` 하나에서 세 디렉토리로 넓혔다 —
+  # 위 구조 도출과 같은 이유(§5.1). 넓혀도 **기존 아홉 정본의 도출된 플러그인
+  # 집합은 그대로**다(실측: report 파일의 Step 5/6 대조).
+  #
+  # 넓히자마자 실측으로 걸린 것 — `reviewing-document.md` 정본의 shared/ 쪽 부모
+  # 디렉토리 이름 자체가 `references`다(`shared/docreview/references/…`). 그래서
+  # 그 **전체 경로를 그대로 인용하는 산문**(예: 다른 플러그인의 테스트 주석이
+  # "`shared/docreview/references/reviewing-document.md` 를 읽고 따른다"고 설명하는
+  # 것)도 `references/${base}` 부분 문자열에 걸려, 실제 로컬 배포가 없는 플러그인이
+  # `expected_plugins` 에 잘못 들어왔다(quality-gates 실측 RED: 배포 지점 없음).
+  # 이 패턴이 원래 잡으려던 것은 "자기 플러그인 기준 상대 경로로 부르는 관례"지
+  # "정본의 전체 경로를 설명 목적으로 인용"이 아니다 — 그래서 **`shared/.../<dir>/base`
+  # 형태로 나타나는 매치는 줄 단위로 제외**한다(파일 단위로 빼면 같은 파일의 진짜
+  # 관례 참조까지 함께 사라진다). 이 줄-단위 제외를 넣자 `run_docreview_codex_reviewer.sh`
+  # (shared/ 쪽 부모 디렉토리도 우연히 `scripts`)의 산문 도출이 2 → 1 로 줄었다 — 같은
+  # 충돌이 `scripts/` 패턴에도 이미 잠재했다는 뜻이다. 구조 도출이 그 정본의 두 배포
+  # 지점을 이미 덮고 있어(위 알림 참조) 게이트 결과는 바뀌지 않았지만, **넓히기 전에는
+  # 드러나지 않았던 결함**이라는 사실은 남겨 둔다.
   #
   # 〔2026-08-18 fix round 1, F8〕 코퍼스는 **git 이 추적하는 `plugins/` 전부**다.
   # 앞 판본은 `skills`·`scripts`·`hooks`·`agents`·`commands` 다섯 디렉토리를 손으로
@@ -392,8 +420,11 @@ while IFS= read -r canonical; do
   # 실행해 **stdin 을 기다리며 멈춘다**. 절대 매치하지 않는 파일 하나가 그것을 막는다.
   refs="$( { git ls-files -- 'plugins/*' | grep -vE '/(fixtures|mocks|harness)/'; echo /dev/null; } \
             | tr '\n' '\0' \
-            | xargs -0 grep -lE "scripts/${esc_base}" 2>/dev/null \
-            | grep -vE "^plugins/[^/]+/scripts/${esc_base}\$" || true)"
+            | xargs -0 grep -nE "(scripts|agents|references)/${esc_base}" 2>/dev/null \
+            | grep -vE "shared/[^[:space:]:]*/(scripts|agents|references)/${esc_base}" \
+            | sed -nE 's/^([^:]+):[0-9]+:.*/\1/p' \
+            | grep -vE "^plugins/[^/]+/(scripts|agents|references)/${esc_base}\$" \
+            | sort -u || true)"
   prose_plugins="$(printf '%s\n' "$refs" | sed -nE 's#^plugins/([^/]+)/.*#\1#p' | sort -u)"
   expected_plugins="$(printf '%s\n%s\n' "$structural_plugins" "$prose_plugins" \
                        | grep -v '^$' | sort -u || true)"
@@ -408,11 +439,23 @@ while IFS= read -r canonical; do
   n_this=0
   while IFS= read -r plugin; do
     [ -n "$plugin" ] || continue
-    dep="plugins/$plugin/scripts/$base"
     n_expected=$((n_expected+1))
     n_this=$((n_this+1))
-    if [ ! -e "$dep" ] && [ ! -L "$dep" ]; then
-      no "symlink-∀: $dep 가 없다 (missing) — $canonical 을 참조하는 $plugin 에 배포 지점이 없다"
+    # `dep=` 는 세 배포 디렉토리 중 실제로 존재하는 자리를 찾는다 — `base` 가
+    # `scripts/` 정본이면 첫 후보에서 바로 잡혀 기존 동작과 동일하고(순서 불변),
+    # `reviewing-document.md` 처럼 `references/` 로만 배포되는 정본은 그 자리에서
+    # 잡힌다. 하나로 하드코딩(예: `scripts/`)하면 구조 도출이 넓힌 집합(위)과
+    # 검사 자리가 어긋나 정상 배포를 `missing` 으로 오판한다.
+    dep=""
+    for _d in $DEPLOY_DIRS; do
+      _cand="plugins/$plugin/$_d/$base"
+      if [ -e "$_cand" ] || [ -L "$_cand" ]; then
+        dep="$_cand"
+        break
+      fi
+    done
+    if [ -z "$dep" ]; then
+      no "symlink-∀: plugins/$plugin/{$(printf '%s' "$DEPLOY_DIRS" | tr ' ' ',')}/$base 가 없다 (missing) — $canonical 을 참조하는 $plugin 에 배포 지점이 없다"
       continue
     fi
     if [ ! -L "$dep" ]; then

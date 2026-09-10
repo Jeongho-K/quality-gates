@@ -5,10 +5,13 @@
 # shared/tests/test_no_new_duplication.sh 의 20줄 검사가 지킨다.
 #
 # ── 이 파일을 source 하는 러너 (실측 도출: `grep -l runner_common.sh plugins/*/scripts/`) ──
-# 중첩 YAML(`findings: []` + `meta:`)을 소비 계약으로 갖는 **셋**이다:
+# 중첩 YAML(`findings: []` + `meta:`)을 소비 계약으로 갖는 **넷**이다:
 #   · plugins/quality-gates/scripts/run_codex_reviewer.sh
-#   · plugins/spec-distill/scripts/run_spec_codex_reviewer.sh
 #   · plugins/spec-distill/scripts/run_brief_codex_reviewer.sh
+#   · plugins/spec-distill/scripts/run_seed_codex_reviewer.sh
+#   · run_docreview_codex_reviewer.sh — 정본은 shared/docreview/scripts/ 이고
+#     plugins/{quality-gates,spec-distill}/scripts/ 에 파일 단위 심볼릭 링크로
+#     배포된다. 위 도출 grep 은 그 링크를 따라가 두 경로로 잡는다(같은 파일 하나).
 #
 # ── source 하지 않는 러너 둘 — 스키마가 drift 가 아니라 **다른 소비자 계약**이다 ──
 # 설계 §6.2 는 네 스키마(JSON · 평면 YAML · `agent:` 포함 중첩 · `agent:` 없는 중첩)를

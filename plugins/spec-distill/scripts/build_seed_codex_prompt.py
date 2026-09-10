@@ -22,7 +22,7 @@ design-doc/brief 리뷰 프롬프트 빌더를 재사용하지 **않는다**: ch
 
 **checklist 파일은 축 정의만 담고 JSON 출력 형식은 담지 않는다**(brief Step 3
 verbatim — brief-codex-*.md 형제와 다른 점). 그래서 출력 형식 지시는 형제
-build_spec_codex_prompt.py 와 같은 자리(이 PROMPT_TEMPLATE 안)에 둔다.
+형제 build_brief_codex_prompt.py 와 같은 자리(이 PROMPT_TEMPLATE 안)에 둔다.
 
 Usage: build_seed_codex_prompt.py --axis suppression <payload_file>
 """

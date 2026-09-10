@@ -82,7 +82,7 @@ class TestRunAuditCodexReviewer(unittest.TestCase):
         """AC4 — blind 보존. qg 빌더 이름이 이 파일에 등장하면 안 된다."""
         body = RUNNER.read_text(encoding="utf-8")
         for forbidden in ("build_codex_prompt", "build_artifact_codex_prompt",
-                          "build_spec_codex_prompt", "build_brief_codex_prompt"):
+                          "build_seed_codex_prompt", "build_brief_codex_prompt"):
             self.assertNotIn(forbidden, body,
                              f"qg 빌더 {forbidden} 재사용 — blind가 깨진다 (AC4)")
 

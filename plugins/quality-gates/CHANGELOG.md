@@ -3,6 +3,19 @@
 `quality-gates` 플러그인의 주요 변경 사항을 기록합니다.
 포맷은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), 버전 규칙은 [SemVer](https://semver.org/spec/v2.0.0.html)를 따릅니다.
 
+## [7.5.1] — 2026-09-09
+
+### Changed
+
+- **문서 리뷰 엔진 `shared/docreview/` 이 이 릴리스에서도 계속 바뀐다 — 이 플러그인은 `scripts/{docreview_state,docreview_route,docreview_anchor}.py`·`run_docreview_codex_reviewer.sh` 심볼릭 링크로 함께 배송한다(cache key).** 실측: `docreview_state.py`(+252/−63) · `docreview_route.py`(+100/−23) · `run_docreview_codex_reviewer.sh`(+161/−10) · `docreview_anchor.py`(+7/−1). 내용 전문은 `plugins/spec-distill/CHANGELOG.md` `[1.0.0]`(첫 호출자 배선 + 리뷰 라운드 결함 수정) — 여기서는 이 플러그인이 그대로 물려받는 성질 하나만 짚는다: 러너의 프로필 파서가 `layer_rubric`·`allowed_dispositions` 를 못 읽으면(frontmatter 부재 포함) 조용한 `fm={}` 폴백 대신 `sys.exit(1)` 로 loud 하게 죽는다 — fail-open 하나가 닫혔다. `[7.4.0]`·`[7.5.0]` 이 같은 관용구로 엔진 델타를 적었던 선례를 잇는다. **호출자는 여전히 0** — `/qg critique` 전환은 후속 major PR 그대로다.
+
+### Fixed
+
+- **codex 러너/프롬프트 사본 셋의 주석·테스트 리터럴이 삭제된 spec-distill 파일을 계속 가리키고 있었다.** design doc 자리가 문서 리뷰 엔진으로 전환되며 `run_spec_codex_reviewer.sh`·`build_spec_codex_prompt.py` 가 spec-distill 에서 삭제됐다(`plugins/spec-distill/CHANGELOG.md` `[1.0.0]`) — 이 플러그인의 `scripts/codex_prompt_common.py`(형제 빌더 목록) · `scripts/run_codex_reviewer.sh`(쌍둥이 러너 주석 둘) · `scripts/runner_common.sh`(소비자 목록, 셋 → 넷)의 주석이 그 옛 이름을 계속 인용하고 있었다. 실측 도출(`grep -l`)로 다시 세워 `run_docreview_codex_reviewer.sh`·`run_brief_codex_reviewer.sh` 로 갱신했다. 이 플러그인 **자신의 코드**는 동작 변경 없음 — 전부 주석/도출 소비자 목록 정정(위 `### Changed` 의 심볼릭 링크 델타와는 별개).
+- **`test_governance_no_capability_caps.sh` 의 오탐-점검 주석이 없는 예시를 가리켰다.** 그 주석은 「philosophy 에 `re-review cap 5` · `Phase 5` · `5-ritual gate` 가 비교 연산자 없이 등장하므로 위 `≥5` 단언이 오탐하지 않는다」고 적는데, 문서 리뷰 엔진 전환이 앞의 둘을 그 문서에서 없앴다(절 이름 변경 + 상한 이관). 판정에는 영향이 없지만 — 단언은 글리프만 본다 — 다음 편집자가 오탐 위험을 실제보다 크게 본다. 남은 예시 하나로 줄이고 사라진 둘을 사유와 함께 적었다. 동작 무변경.
+- **spike 테스트가 자기 위험을 적지 않았다 (whole-branch 리뷰 P2).** `tests/spike/test_codex_json_extraction.sh` 는 실제 codex 를 호출하고 그 출력으로 **추적되는** 골든 `spike/fixtures/codex_jsonl_sample.json` 을 덮어써, 그 픽스처를 읽는 형제 락 둘(`test_artifact_codex_reviewer.sh`·`test_findings_parser.sh`)을 그 자리에서 깨뜨린다. 리포 스윕이 `/spike/` 를 제외하는 이유가 그것인데 그 사실이 파일 자신에는 없었다 — 순진한 `find … -name 'test_*.sh'` 로 이 파일에 닿는 다음 사람에게는 보이지 않는 지뢰였다(이 브랜치의 리뷰어가 실제로 밟았다). 헤더 한 문단으로 적었다(동작 무변경).
+- **테스트 다섯이 같은 이유로 재조준됐다.** `test_agent_model_mutation.sh`(고아 짝 제거) · `test_codex_copies_agree.sh` · `test_codex_gate_observation.sh`(옛 design-doc 러너 UNGATED 등재 삭제 + `run_docreview_codex_reviewer.sh` 등재 삭제 — `reviewing-spec` 이 이제 이 러너를 실제로 부른다) · `test_codex_prompt_untrusted_clause.sh`(`build_spec_codex_prompt.py` 후보 제거) · `test_codex_runner_degrade_contract.sh`(러너 도출 목록 갱신, 「5 러너 전부」 라벨이 도출 8 앞에서 이미 거짓이었던 것을 「러너 다섯」으로 수정). `tests/lib/codex_observation.sh` 는 `run_docreview_codex_reviewer.sh` 관측용 최소 프로필 픽스처에 `layer_rubric`·`allowed_dispositions`·`web` frontmatter 를 추가했다 — 위 `### Changed` 가 적은 새 게이트-유도 불변식(F-5) 때문에 frontmatter 없는 최소 파일로는 더 이상 충분하지 않다. 이 플러그인 자신에 새 surface 는 없다 — patch.
+
 ## [7.5.0] — 2026-09-08
 
 ### Fixed
